@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { withCors } from '../_lib/cors';
+import { withCors } from '../_lib/cors.js';
 
 // Calls n8n onboarding workflow (set webhook in Evolution and upsert wa_instance)
 // REQUIRED env vars in Vercel:
