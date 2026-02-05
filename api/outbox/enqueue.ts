@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { withCors } from '../_lib/cors';
-import { getSupabaseAdmin } from '../_lib/supabaseAdmin';
+import { withCors } from '../_lib/cors.js';
+import { getSupabaseAdmin } from '../_lib/supabaseAdmin.js';
 
 // Enqueue a message to be sent by n8n Worker (workflow 03)
 // POST /api/outbox/enqueue
