@@ -6,23 +6,41 @@ function json(res: VercelResponse, status: number, data: any) {
   res.end(JSON.stringify(data));
 }
 
+function safeBody(req: VercelRequest) {
+  const raw: any = (req as any).body;
+
+  // 1) Já veio objeto (normal na Vercel)
+  if (raw && typeof raw === "object") return raw;
+
+  // 2) Veio string
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      // se a string não é JSON, devolve um objeto vazio sem crash
+      return {};
+    }
+  }
+
+  // 3) Veio vazio/outro tipo
+  return {};
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const debugId = `messages_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 
   try {
-    // auth
     const token = String(req.headers["x-api-token"] || "");
     if (!process.env.API_TOKEN) return json(res, 500, { ok: false, debugId, error: "Missing env API_TOKEN" });
     if (token !== process.env.API_TOKEN) return json(res, 401, { ok: false, debugId, error: "Unauthorized" });
 
-    // env
     const url = process.env.SUPABASE_URL;
     const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
     if (!url || !key) return json(res, 500, { ok: false, debugId, error: "Missing Supabase envs" });
 
     const supabase = createClient(url, key, { auth: { persistSession: false } });
 
-    // GET /api/messages?lead_id=...
+    // GET
     if (req.method === "GET") {
       const leadId = String(req.query.lead_id || "");
       if (!leadId) return json(res, 400, { ok: false, debugId, error: "Missing query param lead_id" });
@@ -38,33 +56,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return json(res, 200, { ok: true, debugId, table: "message", column: "lead_id", messages: data ?? [] });
     }
 
-    // POST /api/messages  body: workspace_id, lead_id, direction, text
+    // POST
     if (req.method === "POST") {
-      // Vercel normalmente já entrega req.body como objeto. Se vier string, parse.
-      const raw: any = (req as any).body;
-      const body = typeof raw === "string" ? JSON.parse(raw) : (raw || {});
+      const body = safeBody(req);
 
       const workspaceId = String(body.workspace_id || "");
       const leadId = String(body.lead_id || "");
       const direction = String(body.direction || "");
       const text = body.text == null ? null : String(body.text);
 
-      if (!workspaceId) return json(res, 400, { ok: false, debugId, error: "Missing body.workspace_id" });
-      if (!leadId) return json(res, 400, { ok: false, debugId, error: "Missing body.lead_id" });
-      if (!direction) return json(res, 400, { ok: false, debugId, error: "Missing body.direction" });
+      if (!workspaceId) return json(res, 400, { ok: false, debugId, error: "Missing body.workspace_id", bodyType: typeof (req as any).body });
+      if (!leadId) return json(res, 400, { ok: false, debugId, error: "Missing body.lead_id", bodyType: typeof (req as any).body });
+      if (!direction) return json(res, 400, { ok: false, debugId, error: "Missing body.direction", bodyType: typeof (req as any).body });
 
-      const payload = {
-        workspace_id: workspaceId,
-        lead_id: leadId,
-        direction,
-        text,
-        // message_type default 'text'
-        // created_at default now()
-      };
+      const payload = { workspace_id: workspaceId, lead_id: leadId, direction, text };
 
       const { data, error } = await supabase.from("message").insert(payload).select("*").single();
-
       if (error) return json(res, 500, { ok: false, debugId, error: error.message, details: error, payload });
+
       return json(res, 200, { ok: true, debugId, inserted: data });
     }
 
