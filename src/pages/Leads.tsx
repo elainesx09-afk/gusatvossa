@@ -1,100 +1,198 @@
-import { useState } from 'react';
-import { Search, Filter, MoreHorizontal, Phone, Mail, Star, Clock, ChevronDown } from 'lucide-react';
-import { Input } from '@/components/ui/input';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { Checkbox } from '@/components/ui/checkbox';
-import { DataTable } from '@/components/ui/data-table';
-import { useWorkspace } from '@/contexts/WorkspaceContext';
-import { getLeadsByWorkspace, Lead } from '@/data/demoData';
+import { useMemo, useState } from "react";
+import { Search, MoreHorizontal, Phone, Clock } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import { DataTable } from "@/components/ui/data-table";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
+} from "@/components/ui/dropdown-menu";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@/components/ui/select';
-import { cn } from '@/lib/utils';
+} from "@/components/ui/select";
+import { cn } from "@/lib/utils";
+import { useQuery } from "@tanstack/react-query";
 
-const stageColors: Record<Lead['stage'], string> = {
-  novo: 'bg-info/10 text-info border-info/30',
-  qualificando: 'bg-purple-500/10 text-purple-400 border-purple-500/30',
-  proposta: 'bg-warning/10 text-warning border-warning/30',
-  'follow-up': 'bg-orange-500/10 text-orange-400 border-orange-500/30',
-  ganhou: 'bg-success/10 text-success border-success/30',
-  perdido: 'bg-destructive/10 text-destructive border-destructive/30',
+type LeadStage = "novo" | "qualificando" | "proposta" | "follow-up" | "ganhou" | "perdido";
+
+type LeadApi = {
+  id: string;
+  workspace_id: string;
+
+  // opcionais (dependem do teu schema real)
+  name?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  stage?: LeadStage | null;
+  source?: string | null;
+  score?: number | null;
+  last_message?: string | null;
+  last_message_at?: string | null;
+
+  created_at?: string | null;
+  updated_at?: string | null;
 };
 
-const stageLabels: Record<Lead['stage'], string> = {
-  novo: 'Novo',
-  qualificando: 'Qualificando',
-  proposta: 'Proposta',
-  'follow-up': 'Follow-up',
-  ganhou: 'Ganhou',
-  perdido: 'Perdido',
+const stageColors: Record<LeadStage, string> = {
+  novo: "bg-info/10 text-info border-info/30",
+  qualificando: "bg-purple-500/10 text-purple-400 border-purple-500/30",
+  proposta: "bg-warning/10 text-warning border-warning/30",
+  "follow-up": "bg-orange-500/10 text-orange-400 border-orange-500/30",
+  ganhou: "bg-success/10 text-success border-success/30",
+  perdido: "bg-destructive/10 text-destructive border-destructive/30",
 };
 
-export default function Leads() {
-  const { currentWorkspace } = useWorkspace();
-  const allLeads = getLeadsByWorkspace(currentWorkspace.id);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [stageFilter, setStageFilter] = useState<string>('all');
-  const [selectedLeads, setSelectedLeads] = useState<string[]>([]);
+const stageLabels: Record<LeadStage, string> = {
+  novo: "Novo",
+  qualificando: "Qualificando",
+  proposta: "Proposta",
+  "follow-up": "Follow-up",
+  ganhou: "Ganhou",
+  perdido: "Perdido",
+};
 
-  const filteredLeads = allLeads.filter((lead) => {
-    const matchesSearch =
-      lead.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      lead.phone.includes(searchQuery);
-    const matchesStage = stageFilter === 'all' || lead.stage === stageFilter;
-    return matchesSearch && matchesStage;
+function envOrThrow(name: string) {
+  const v = (import.meta as any).env?.[name];
+  return String(v || "");
+}
+
+async function apiGetLeads(): Promise<LeadApi[]> {
+  const baseUrl = envOrThrow("VITE_API_BASE_URL");
+  const token = envOrThrow("VITE_API_TOKEN");
+  const workspaceId = envOrThrow("VITE_WORKSPACE_ID");
+
+  if (!baseUrl || !token || !workspaceId) {
+    throw new Error("Missing VITE envs (VITE_API_BASE_URL / VITE_API_TOKEN / VITE_WORKSPACE_ID)");
+  }
+
+  const url = `${baseUrl.replace(/\/$/, "")}/api/leads?workspace_id=${encodeURIComponent(workspaceId)}`;
+
+  const r = await fetch(url, {
+    method: "GET",
+    headers: {
+      "x-api-token": token,
+    },
   });
 
+  const json = await r.json().catch(() => null);
+
+  if (!r.ok) {
+    const msg = json?.error || json?.details?.message || `HTTP ${r.status}`;
+    throw new Error(msg);
+  }
+
+  // teu endpoint retorna { ok:true, leads:[...] }
+  if (!json?.ok) {
+    throw new Error(json?.error || "API returned ok=false");
+  }
+
+  return (json.leads ?? []) as LeadApi[];
+}
+
+function initials(name: string) {
+  return name
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((n) => n[0]?.toUpperCase())
+    .join("");
+}
+
+function fmtDateTime(v?: string | null) {
+  if (!v) return "-";
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return String(v);
+  return d.toLocaleString();
+}
+
+export default function Leads() {
+  const [searchQuery, setSearchQuery] = useState("");
+  const [stageFilter, setStageFilter] = useState<string>("all");
+  const [selectedLeads, setSelectedLeads] = useState<string[]>([]);
+
+  const { data, isLoading, isError, error, refetch, dataUpdatedAt } = useQuery({
+    queryKey: ["leads", envOrThrow("VITE_WORKSPACE_ID")],
+    queryFn: apiGetLeads,
+    staleTime: 15_000,
+    retry: 1,
+  });
+
+  const allLeads = data ?? [];
+
+  const normalized = useMemo(() => {
+    // garante campos mínimos pra UI não quebrar
+    return allLeads.map((l) => {
+      const name = (l.name && String(l.name).trim()) || "Lead";
+      const phone = (l.phone && String(l.phone).trim()) || "-";
+      const stage: LeadStage = (l.stage as LeadStage) || "novo";
+      const score = typeof l.score === "number" ? l.score : 0;
+      const source = (l.source && String(l.source)) || "-";
+      const lastMessage = (l.last_message && String(l.last_message)) || "-";
+      const lastMessageAt = l.last_message_at || l.updated_at || l.created_at || null;
+
+      return {
+        ...l,
+        name,
+        phone,
+        stage,
+        score,
+        source,
+        lastMessage,
+        lastMessageAt,
+      };
+    });
+  }, [allLeads]);
+
+  const filteredLeads = useMemo(() => {
+    return normalized.filter((lead) => {
+      const q = searchQuery.trim().toLowerCase();
+      const matchesSearch =
+        !q ||
+        lead.name.toLowerCase().includes(q) ||
+        String(lead.phone).includes(searchQuery.trim());
+      const matchesStage = stageFilter === "all" || lead.stage === stageFilter;
+      return matchesSearch && matchesStage;
+    });
+  }, [normalized, searchQuery, stageFilter]);
+
   const toggleSelectAll = () => {
-    if (selectedLeads.length === filteredLeads.length) {
-      setSelectedLeads([]);
-    } else {
-      setSelectedLeads(filteredLeads.map((l) => l.id));
-    }
+    if (selectedLeads.length === filteredLeads.length) setSelectedLeads([]);
+    else setSelectedLeads(filteredLeads.map((l) => l.id));
   };
 
   const toggleSelect = (id: string) => {
-    setSelectedLeads((prev) =>
-      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
-    );
+    setSelectedLeads((prev) => (prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]));
   };
 
   const columns = [
     {
-      key: 'select',
+      key: "select",
       header: (
         <Checkbox
           checked={selectedLeads.length === filteredLeads.length && filteredLeads.length > 0}
           onCheckedChange={toggleSelectAll}
         />
       ) as any,
-      className: 'w-12',
-      render: (item: Lead) => (
-        <Checkbox
-          checked={selectedLeads.includes(item.id)}
-          onCheckedChange={() => toggleSelect(item.id)}
-        />
+      className: "w-12",
+      render: (item: any) => (
+        <Checkbox checked={selectedLeads.includes(item.id)} onCheckedChange={() => toggleSelect(item.id)} />
       ),
     },
     {
-      key: 'name',
-      header: 'Lead',
-      render: (item: Lead) => (
+      key: "name",
+      header: "Lead",
+      render: (item: any) => (
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
-            <span className="text-sm font-semibold text-primary">
-              {item.name.split(' ').map((n) => n[0]).join('')}
-            </span>
+            <span className="text-sm font-semibold text-primary">{initials(item.name)}</span>
           </div>
           <div>
             <div className="font-medium text-foreground">{item.name}</div>
@@ -107,31 +205,31 @@ export default function Leads() {
       ),
     },
     {
-      key: 'stage',
-      header: 'Stage',
-      render: (item: Lead) => (
-        <Badge variant="outline" className={cn('border', stageColors[item.stage])}>
+      key: "stage",
+      header: "Stage",
+      render: (item: any) => (
+        <Badge variant="outline" className={cn("border", stageColors[item.stage])}>
           {stageLabels[item.stage]}
         </Badge>
       ),
     },
     {
-      key: 'source',
-      header: 'Source',
-      render: (item: Lead) => <span className="text-muted-foreground text-sm">{item.source}</span>,
+      key: "source",
+      header: "Source",
+      render: (item: any) => <span className="text-muted-foreground text-sm">{item.source}</span>,
     },
     {
-      key: 'score',
-      header: 'Score',
-      render: (item: Lead) => (
+      key: "score",
+      header: "Score",
+      render: (item: any) => (
         <div className="flex items-center gap-2">
           <div className="w-16 h-2 bg-secondary rounded-full overflow-hidden">
             <div
               className={cn(
-                'h-full rounded-full transition-all',
-                item.score >= 80 ? 'bg-success' : item.score >= 50 ? 'bg-warning' : 'bg-destructive'
+                "h-full rounded-full transition-all",
+                item.score >= 80 ? "bg-success" : item.score >= 50 ? "bg-warning" : "bg-destructive"
               )}
-              style={{ width: `${item.score}%` }}
+              style={{ width: `${Math.max(0, Math.min(100, item.score))}%` }}
             />
           </div>
           <span className="text-sm font-medium text-foreground">{item.score}</span>
@@ -139,30 +237,23 @@ export default function Leads() {
       ),
     },
     {
-      key: 'lastMessage',
-      header: 'Last Message',
-      render: (item: Lead) => (
-        <div className="max-w-[200px]">
+      key: "lastMessage",
+      header: "Last Message",
+      render: (item: any) => (
+        <div className="max-w-[220px]">
           <p className="text-sm text-foreground truncate">{item.lastMessage}</p>
           <div className="flex items-center gap-1 text-xs text-muted-foreground">
             <Clock className="w-3 h-3" />
-            {item.lastMessageAt}
+            {fmtDateTime(item.lastMessageAt)}
           </div>
         </div>
       ),
     },
     {
-      key: 'responsible',
-      header: 'Responsible',
-      render: (item: Lead) => (
-        <span className="text-sm text-muted-foreground">{item.responsible || '-'}</span>
-      ),
-    },
-    {
-      key: 'actions',
-      header: '',
-      className: 'w-12',
-      render: (item: Lead) => (
+      key: "actions",
+      header: "",
+      className: "w-12",
+      render: () => (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon" className="text-muted-foreground">
@@ -182,17 +273,30 @@ export default function Leads() {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      {/* Page Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold font-display tracking-tight text-foreground">Leads</h1>
           <p className="text-muted-foreground mt-1">
-            {filteredLeads.length} leads encontrados
+            {isLoading ? "Carregando..." : `${filteredLeads.length} leads encontrados`}
+            {dataUpdatedAt ? ` · atualizado: ${new Date(dataUpdatedAt).toLocaleTimeString()}` : ""}
           </p>
         </div>
+
+        <Button variant="outline" className="border-border" onClick={() => refetch()}>
+          Atualizar
+        </Button>
       </div>
 
-      {/* Filters */}
+      {isError && (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+          <div className="font-semibold">Erro carregando leads</div>
+          <div className="mt-1 opacity-90">{String((error as any)?.message || error)}</div>
+          <div className="mt-2 text-xs opacity-80">
+            Confere se a Vercel tem: VITE_API_BASE_URL, VITE_API_TOKEN, VITE_WORKSPACE_ID.
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center gap-4">
         <div className="relative flex-1 min-w-[200px] max-w-md">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -203,6 +307,7 @@ export default function Leads() {
             onChange={(e) => setSearchQuery(e.target.value)}
           />
         </div>
+
         <Select value={stageFilter} onValueChange={setStageFilter}>
           <SelectTrigger className="w-[180px] bg-secondary border-border">
             <SelectValue placeholder="Filter by stage" />
@@ -218,7 +323,6 @@ export default function Leads() {
           </SelectContent>
         </Select>
 
-        {/* Bulk Actions */}
         {selectedLeads.length > 0 && (
           <div className="flex items-center gap-2 ml-auto">
             <span className="text-sm text-muted-foreground">{selectedLeads.length} selected</span>
@@ -235,8 +339,7 @@ export default function Leads() {
         )}
       </div>
 
-      {/* Table */}
-      <DataTable columns={columns} data={filteredLeads} keyField="id" />
+      <DataTable columns={columns as any} data={filteredLeads as any} keyField="id" />
     </div>
   );
 }
