@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Search, Send, Phone, UserPlus, ArrowRight, Image, Mic, MoreHorizontal, RefreshCw } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useLocation } from "react-router-dom";
 
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -100,6 +101,13 @@ function fmtTime(v?: string | null) {
 
 export default function Inbox() {
   const qc = useQueryClient();
+  const location = useLocation();
+
+  const leadFromUrl = useMemo(() => {
+    const q = new URLSearchParams(location.search);
+    return q.get("lead_id");
+  }, [location.search]);
+
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
   const [messageInput, setMessageInput] = useState("");
@@ -113,11 +121,22 @@ export default function Inbox() {
 
   const leads = leadsQ.data ?? [];
 
-  // auto-seleciona o primeiro lead
-  useMemo(() => {
-    if (!selectedLeadId && leads.length) setSelectedLeadId(leads[0].id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leads.length]);
+  // seleciona lead por URL, senão seleciona o primeiro
+  useEffect(() => {
+    if (!leads.length) return;
+
+    if (leadFromUrl) {
+      const exists = leads.some((l) => l.id === leadFromUrl);
+      if (exists) {
+        setSelectedLeadId(leadFromUrl);
+        return;
+      }
+    }
+
+    if (!selectedLeadId) {
+      setSelectedLeadId(leads[0].id);
+    }
+  }, [leads, leadFromUrl, selectedLeadId]);
 
   const selectedLead = leads.find((l) => l.id === selectedLeadId) || null;
 
@@ -162,7 +181,7 @@ export default function Inbox() {
 
   return (
     <div className="h-[calc(100vh-8rem)] flex gap-6 animate-fade-in">
-      {/* Left = Leads */}
+      {/* Left */}
       <div className="w-96 flex flex-col bg-card border border-border rounded-xl overflow-hidden">
         <div className="p-4 border-b border-border space-y-3">
           <div className="flex items-center gap-2">
@@ -234,7 +253,7 @@ export default function Inbox() {
         </ScrollArea>
       </div>
 
-      {/* Right = Chat */}
+      {/* Right */}
       {selectedLead ? (
         <div className="flex-1 flex flex-col bg-card border border-border rounded-xl overflow-hidden">
           <div className="p-4 border-b border-border flex items-center justify-between">
