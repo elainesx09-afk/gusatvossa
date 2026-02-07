@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Plus, Clock, Star, MessageSquare, Calendar } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -24,7 +24,7 @@ type LeadApi = {
   workspace_id: string;
   name?: string | null;
   phone?: string | null;
-  stage?: PipelineStage | string | null;
+  stage?: string | null;
   source?: string | null;
   score?: number | null;
   last_message?: string | null;
@@ -40,11 +40,11 @@ const BASE = () => env("VITE_API_BASE_URL").replace(/\/$/, "");
 const TOKEN = () => env("VITE_API_TOKEN");
 const WORKSPACE = () => env("VITE_WORKSPACE_ID");
 
-function headersJson() {
-  return { "x-api-token": TOKEN(), "Content-Type": "application/json" };
-}
 function headers() {
   return { "x-api-token": TOKEN() };
+}
+function headersJson() {
+  return { ...headers(), "Content-Type": "application/json" };
 }
 
 function initials(name?: string | null) {
@@ -59,10 +59,25 @@ function initials(name?: string | null) {
   );
 }
 
+function safeStage(v?: string | null): PipelineStage {
+  const s = String(v || "novo");
+  const ok = stages.some((x) => x.id === s);
+  return (ok ? s : "novo") as PipelineStage;
+}
+
 async function fetchLeads(): Promise<LeadApi[]> {
-  const r = await fetch(`${BASE()}/api/leads?workspace_id=${encodeURIComponent(WORKSPACE())}`, {
+  const base = BASE();
+  const token = TOKEN();
+  const workspaceId = WORKSPACE();
+
+  if (!base || !token || !workspaceId) {
+    throw new Error("Env faltando: VITE_API_BASE_URL, VITE_API_TOKEN, VITE_WORKSPACE_ID");
+  }
+
+  const r = await fetch(`${base}/api/leads?workspace_id=${encodeURIComponent(workspaceId)}`, {
     headers: headers(),
   });
+
   const j = await r.json().catch(() => null);
   if (!r.ok) throw new Error(j?.error || j?.details?.message || `HTTP ${r.status}`);
   if (!j?.ok) throw new Error(j?.error || "ok=false");
@@ -70,13 +85,17 @@ async function fetchLeads(): Promise<LeadApi[]> {
 }
 
 async function patchLeadStage(input: { id: string; stage: PipelineStage }) {
-  const body = {
-    workspace_id: WORKSPACE(),
-    id: input.id,
-    stage: input.stage,
-  };
+  const base = BASE();
+  const token = TOKEN();
+  const workspaceId = WORKSPACE();
 
-  const r = await fetch(`${BASE()}/api/leads`, {
+  if (!base || !token || !workspaceId) {
+    throw new Error("Env faltando: VITE_API_BASE_URL, VITE_API_TOKEN, VITE_WORKSPACE_ID");
+  }
+
+  const body = { workspace_id: workspaceId, id: input.id, stage: input.stage };
+
+  const r = await fetch(`${base}/api/leads`, {
     method: "PATCH",
     headers: headersJson(),
     body: JSON.stringify(body),
@@ -100,14 +119,13 @@ export default function Pipeline() {
     retry: 1,
   });
 
-  const leads = leadsQ.data ?? [];
+  const serverLeads = leadsQ.data ?? [];
 
-  // Kanban local (pra UI responder rápido)
+  // estado local pra drag responder instantaneamente
   const [localLeads, setLocalLeads] = useState<LeadApi[]>([]);
-  useMemo(() => {
-    if (leads.length) setLocalLeads(leads);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [leadsQ.data?.length]);
+  useEffect(() => {
+    setLocalLeads(serverLeads);
+  }, [serverLeads]);
 
   const updateStageMut = useMutation({
     mutationFn: patchLeadStage,
@@ -115,27 +133,27 @@ export default function Pipeline() {
       await qc.invalidateQueries({ queryKey: ["leads", WORKSPACE()] });
     },
     onError: async () => {
-      // volta pro estado do servidor se falhar
+      // volta pro servidor se falhar
       await qc.invalidateQueries({ queryKey: ["leads", WORKSPACE()] });
     },
   });
 
   const getLeadsByStage = (stage: PipelineStage) =>
-    (localLeads.length ? localLeads : leads).filter((l) => (l.stage || "novo") === stage);
+    localLeads.filter((l) => safeStage(l.stage) === stage);
 
   const handleDragStart = (leadId: string) => setDraggedLead(leadId);
-
   const handleDragOver = (e: React.DragEvent) => e.preventDefault();
 
   const handleDrop = async (stage: PipelineStage) => {
     if (!draggedLead) return;
 
-    // otimista
-    setLocalLeads((prev) => prev.map((l) => (l.id === draggedLead ? { ...l, stage } : l)));
-
     const leadId = draggedLead;
     setDraggedLead(null);
 
+    // otimista
+    setLocalLeads((prev) => prev.map((l) => (l.id === leadId ? { ...l, stage } : l)));
+
+    // persiste
     await updateStageMut.mutateAsync({ id: leadId, stage });
   };
 
@@ -257,7 +275,7 @@ export default function Pipeline() {
                 </div>
                 <div className="bg-secondary/50 rounded-lg p-3">
                   <p className="text-xs text-muted-foreground mb-1">Stage</p>
-                  <p className="text-sm font-medium text-foreground">{String(selectedLead.stage || "novo")}</p>
+                  <p className="text-sm font-medium text-foreground">{safeStage(selectedLead.stage)}</p>
                 </div>
               </div>
 
