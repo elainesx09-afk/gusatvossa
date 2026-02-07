@@ -38,48 +38,11 @@ const BASE = () => env("VITE_API_BASE_URL").replace(/\/$/, "");
 const TOKEN = () => env("VITE_API_TOKEN");
 const WORKSPACE = () => env("VITE_WORKSPACE_ID");
 
-function headersJson() {
-  return { "x-api-token": TOKEN(), "Content-Type": "application/json" };
-}
 function headers() {
   return { "x-api-token": TOKEN() };
 }
-
-async function getLeads(): Promise<LeadApi[]> {
-  const r = await fetch(`${BASE()}/api/leads?workspace_id=${encodeURIComponent(WORKSPACE())}`, { headers: headers() });
-  const j = await r.json().catch(() => null);
-  if (!r.ok) throw new Error(j?.error || j?.details?.message || `HTTP ${r.status}`);
-  if (!j?.ok) throw new Error(j?.error || "ok=false");
-  return j.leads ?? [];
-}
-
-async function getMessages(leadId: string): Promise<MessageApi[]> {
-  const r = await fetch(`${BASE()}/api/messages?lead_id=${encodeURIComponent(leadId)}`, { headers: headers() });
-  const j = await r.json().catch(() => null);
-  if (!r.ok) throw new Error(j?.error || j?.details?.message || `HTTP ${r.status}`);
-  if (!j?.ok) throw new Error(j?.error || "ok=false");
-  return j.messages ?? [];
-}
-
-async function sendMessage(args: { leadId: string; text: string }) {
-  const body = {
-    workspace_id: WORKSPACE(),
-    lead_id: args.leadId,
-    direction: "out",
-    message_type: "text",
-    text: args.text,
-  };
-
-  const r = await fetch(`${BASE()}/api/messages`, {
-    method: "POST",
-    headers: headersJson(),
-    body: JSON.stringify(body),
-  });
-
-  const j = await r.json().catch(() => null);
-  if (!r.ok) throw new Error(j?.error || j?.details?.message || `HTTP ${r.status}`);
-  if (!j?.ok) throw new Error(j?.error || "ok=false");
-  return j;
+function headersJson() {
+  return { ...headers(), "Content-Type": "application/json" };
 }
 
 function initials(name?: string | null) {
@@ -97,6 +60,57 @@ function fmtTime(v?: string | null) {
   const d = new Date(v);
   if (Number.isNaN(d.getTime())) return String(v);
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+async function getLeads(): Promise<LeadApi[]> {
+  const base = BASE();
+  const token = TOKEN();
+  const workspaceId = WORKSPACE();
+  if (!base || !token || !workspaceId) throw new Error("Env faltando: VITE_API_BASE_URL, VITE_API_TOKEN, VITE_WORKSPACE_ID");
+
+  const r = await fetch(`${base}/api/leads?workspace_id=${encodeURIComponent(workspaceId)}`, { headers: headers() });
+  const j = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(j?.error || j?.details?.message || `HTTP ${r.status}`);
+  if (!j?.ok) throw new Error(j?.error || "ok=false");
+  return j.leads ?? [];
+}
+
+async function getMessages(leadId: string): Promise<MessageApi[]> {
+  const base = BASE();
+  const token = TOKEN();
+  if (!base || !token) throw new Error("Env faltando: VITE_API_BASE_URL, VITE_API_TOKEN");
+
+  const r = await fetch(`${base}/api/messages?lead_id=${encodeURIComponent(leadId)}`, { headers: headers() });
+  const j = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(j?.error || j?.details?.message || `HTTP ${r.status}`);
+  if (!j?.ok) throw new Error(j?.error || "ok=false");
+  return j.messages ?? [];
+}
+
+async function sendMessage(args: { leadId: string; text: string }) {
+  const base = BASE();
+  const token = TOKEN();
+  const workspaceId = WORKSPACE();
+  if (!base || !token || !workspaceId) throw new Error("Env faltando: VITE_API_BASE_URL, VITE_API_TOKEN, VITE_WORKSPACE_ID");
+
+  const body = {
+    workspace_id: workspaceId,
+    lead_id: args.leadId,
+    direction: "out",
+    message_type: "text",
+    text: args.text,
+  };
+
+  const r = await fetch(`${base}/api/messages`, {
+    method: "POST",
+    headers: headersJson(),
+    body: JSON.stringify(body),
+  });
+
+  const j = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(j?.error || j?.details?.message || `HTTP ${r.status}`);
+  if (!j?.ok) throw new Error(j?.error || "ok=false");
+  return j;
 }
 
 export default function Inbox() {
@@ -121,7 +135,6 @@ export default function Inbox() {
 
   const leads = leadsQ.data ?? [];
 
-  // seleciona lead por URL, senão seleciona o primeiro
   useEffect(() => {
     if (!leads.length) return;
 
@@ -133,9 +146,7 @@ export default function Inbox() {
       }
     }
 
-    if (!selectedLeadId) {
-      setSelectedLeadId(leads[0].id);
-    }
+    if (!selectedLeadId) setSelectedLeadId(leads[0].id);
   }, [leads, leadFromUrl, selectedLeadId]);
 
   const selectedLead = leads.find((l) => l.id === selectedLeadId) || null;
@@ -159,9 +170,7 @@ export default function Inbox() {
     retry: 1,
   });
 
-  const messages = (messagesQ.data ?? []).slice().sort((a, b) => {
-    return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-  });
+  const messages = (messagesQ.data ?? []).slice().sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
 
   const sendMut = useMutation({
     mutationFn: sendMessage,
@@ -181,7 +190,7 @@ export default function Inbox() {
 
   return (
     <div className="h-[calc(100vh-8rem)] flex gap-6 animate-fade-in">
-      {/* Left */}
+      {/* Conversations List */}
       <div className="w-96 flex flex-col bg-card border border-border rounded-xl overflow-hidden">
         <div className="p-4 border-b border-border space-y-3">
           <div className="flex items-center gap-2">
@@ -208,9 +217,7 @@ export default function Inbox() {
           </div>
 
           {leadsQ.isError && (
-            <div className="text-xs text-destructive">
-              Erro leads: {String((leadsQ.error as any)?.message || leadsQ.error)}
-            </div>
+            <div className="text-xs text-destructive">Erro leads: {String((leadsQ.error as any)?.message || leadsQ.error)}</div>
           )}
         </div>
 
@@ -235,9 +242,7 @@ export default function Inbox() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between">
                       <span className="font-medium text-foreground truncate">{name}</span>
-                      <span className="text-[10px] text-muted-foreground whitespace-nowrap ml-2">
-                        {fmtTime(lastAt)}
-                      </span>
+                      <span className="text-[10px] text-muted-foreground whitespace-nowrap ml-2">{fmtTime(lastAt)}</span>
                     </div>
                     <p className="text-sm text-muted-foreground truncate">{lead.last_message || "-"}</p>
                     <div className="flex gap-1 mt-1">
@@ -253,7 +258,7 @@ export default function Inbox() {
         </ScrollArea>
       </div>
 
-      {/* Right */}
+      {/* Chat Area */}
       {selectedLead ? (
         <div className="flex-1 flex flex-col bg-card border border-border rounded-xl overflow-hidden">
           <div className="p-4 border-b border-border flex items-center justify-between">
