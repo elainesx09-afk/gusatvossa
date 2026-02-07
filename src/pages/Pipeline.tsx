@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Plus, Clock, Star, MessageSquare, Calendar } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -61,8 +62,7 @@ function initials(name?: string | null) {
 
 function safeStage(v?: string | null): PipelineStage {
   const s = String(v || "novo");
-  const ok = stages.some((x) => x.id === s);
-  return (ok ? s : "novo") as PipelineStage;
+  return (stages.some((x) => x.id === s) ? s : "novo") as PipelineStage;
 }
 
 async function fetchLeads(): Promise<LeadApi[]> {
@@ -108,7 +108,9 @@ async function patchLeadStage(input: { id: string; stage: PipelineStage }) {
 }
 
 export default function Pipeline() {
+  const navigate = useNavigate();
   const qc = useQueryClient();
+
   const [selectedLead, setSelectedLead] = useState<LeadApi | null>(null);
   const [draggedLead, setDraggedLead] = useState<string | null>(null);
 
@@ -121,7 +123,6 @@ export default function Pipeline() {
 
   const serverLeads = leadsQ.data ?? [];
 
-  // estado local pra drag responder instantaneamente
   const [localLeads, setLocalLeads] = useState<LeadApi[]>([]);
   useEffect(() => {
     setLocalLeads(serverLeads);
@@ -133,13 +134,11 @@ export default function Pipeline() {
       await qc.invalidateQueries({ queryKey: ["leads", WORKSPACE()] });
     },
     onError: async () => {
-      // volta pro servidor se falhar
       await qc.invalidateQueries({ queryKey: ["leads", WORKSPACE()] });
     },
   });
 
-  const getLeadsByStage = (stage: PipelineStage) =>
-    localLeads.filter((l) => safeStage(l.stage) === stage);
+  const getLeadsByStage = (stage: PipelineStage) => localLeads.filter((l) => safeStage(l.stage) === stage);
 
   const handleDragStart = (leadId: string) => setDraggedLead(leadId);
   const handleDragOver = (e: React.DragEvent) => e.preventDefault();
@@ -150,10 +149,8 @@ export default function Pipeline() {
     const leadId = draggedLead;
     setDraggedLead(null);
 
-    // otimista
     setLocalLeads((prev) => prev.map((l) => (l.id === leadId ? { ...l, stage } : l)));
 
-    // persiste
     await updateStageMut.mutateAsync({ id: leadId, stage });
   };
 
@@ -228,9 +225,7 @@ export default function Pipeline() {
                         </div>
                       </div>
 
-                      <p className="text-xs text-muted-foreground mb-3 line-clamp-2">
-                        {lead.last_message || "-"}
-                      </p>
+                      <p className="text-xs text-muted-foreground mb-3 line-clamp-2">{lead.last_message || "-"}</p>
 
                       <div className="flex items-center justify-between text-xs">
                         <div className="flex items-center gap-1 text-muted-foreground">
@@ -291,10 +286,17 @@ export default function Pipeline() {
               </div>
 
               <div className="flex gap-2">
-                <Button className="flex-1 btn-premium">
+                <Button
+                  className="flex-1 btn-premium"
+                  onClick={() => {
+                    // navega SEM depender do Inbox estar “pronto”
+                    navigate(`/inbox?lead_id=${encodeURIComponent(selectedLead.id)}`);
+                  }}
+                >
                   <MessageSquare className="w-4 h-4 mr-2" />
                   Open Chat
                 </Button>
+
                 <Button variant="outline" className="flex-1 border-border text-muted-foreground">
                   Edit Lead
                 </Button>
