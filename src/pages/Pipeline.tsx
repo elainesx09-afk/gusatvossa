@@ -1,13 +1,13 @@
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { Plus, Clock, Star, MessageSquare, Calendar } from "lucide-react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
-
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { useWorkspace } from "@/contexts/WorkspaceContext";
+import { useNavigate } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 type PipelineStage = "novo" | "qualificando" | "proposta" | "follow-up" | "ganhou" | "perdido";
 
@@ -20,164 +20,163 @@ const stages: { id: PipelineStage; label: string; color: string }[] = [
   { id: "perdido", label: "Perdido", color: "bg-destructive" },
 ];
 
-type LeadApi = {
+type Lead = {
   id: string;
-  workspace_id: string;
-  name?: string | null;
-  phone?: string | null;
-  stage?: string | null;
-  source?: string | null;
-  score?: number | null;
-  last_message?: string | null;
-  last_message_at?: string | null;
-  updated_at?: string | null;
-  created_at?: string | null;
+  workspace_id?: string;
+  name?: string;
+  phone?: string;
+  stage?: PipelineStage;
+  score?: number;
+  last_message?: string;
+  lastMessage?: string;
+  last_message_at?: string;
+  lastMessageAt?: string;
+  needs_follow_up?: boolean;
+  needsFollowUp?: boolean;
+  tags?: string[];
 };
 
 function env(name: string) {
-  return String((import.meta as any).env?.[name] || "");
-}
-const BASE = () => env("VITE_API_BASE_URL").replace(/\/$/, "");
-const TOKEN = () => env("VITE_API_TOKEN");
-const WORKSPACE = () => env("VITE_WORKSPACE_ID");
-
-function headers() {
-  return { "x-api-token": TOKEN() };
-}
-function headersJson() {
-  return { ...headers(), "Content-Type": "application/json" };
+  // Vite env safe access
+  return (import.meta as any).env?.[name] as string | undefined;
 }
 
-function initials(name?: string | null) {
-  const s = String(name || "Lead").trim();
-  return (
-    s
-      .split(" ")
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((n) => n[0]?.toUpperCase())
-      .join("") || "L"
-  );
-}
+const API_BASE = env("VITE_API_BASE_URL") || "";
+const API_TOKEN = env("VITE_API_TOKEN") || "";
+const ENV_WORKSPACE_ID = env("VITE_WORKSPACE_ID") || "";
 
-function safeStage(v?: string | null): PipelineStage {
-  const s = String(v || "novo");
-  return (stages.some((x) => x.id === s) ? s : "novo") as PipelineStage;
-}
+async function apiFetch(path: string, init?: RequestInit) {
+  if (!API_BASE) throw new Error("VITE_API_BASE_URL missing");
+  if (!API_TOKEN) throw new Error("VITE_API_TOKEN missing");
 
-async function fetchLeads(): Promise<LeadApi[]> {
-  const base = BASE();
-  const token = TOKEN();
-  const workspaceId = WORKSPACE();
-
-  if (!base || !token || !workspaceId) {
-    throw new Error("Env faltando: VITE_API_BASE_URL, VITE_API_TOKEN, VITE_WORKSPACE_ID");
-  }
-
-  const r = await fetch(`${base}/api/leads?workspace_id=${encodeURIComponent(workspaceId)}`, {
-    headers: headers(),
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: {
+      ...(init?.headers || {}),
+      "x-api-token": API_TOKEN,
+      "Content-Type": "application/json",
+    },
   });
 
-  const j = await r.json().catch(() => null);
-  if (!r.ok) throw new Error(j?.error || j?.details?.message || `HTTP ${r.status}`);
-  if (!j?.ok) throw new Error(j?.error || "ok=false");
-  return j.leads ?? [];
-}
-
-async function patchLeadStage(input: { id: string; stage: PipelineStage }) {
-  const base = BASE();
-  const token = TOKEN();
-  const workspaceId = WORKSPACE();
-
-  if (!base || !token || !workspaceId) {
-    throw new Error("Env faltando: VITE_API_BASE_URL, VITE_API_TOKEN, VITE_WORKSPACE_ID");
+  const text = await res.text();
+  let json: any = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    // ignore
   }
 
-  const body = { workspace_id: workspaceId, id: input.id, stage: input.stage };
+  if (!res.ok) {
+    const msg =
+      json?.error ||
+      json?.message ||
+      `HTTP ${res.status} ${res.statusText}` ||
+      "Request failed";
+    throw new Error(msg);
+  }
 
-  const r = await fetch(`${base}/api/leads`, {
-    method: "PATCH",
-    headers: headersJson(),
-    body: JSON.stringify(body),
-  });
-
-  const j = await r.json().catch(() => null);
-  if (!r.ok) throw new Error(j?.error || j?.details?.message || `HTTP ${r.status}`);
-  if (!j?.ok) throw new Error(j?.error || "ok=false");
-  return j;
+  return json;
 }
 
 export default function Pipeline() {
-  const navigate = useNavigate();
+  const { currentWorkspace } = useWorkspace();
+  const workspaceId = currentWorkspace?.id || ENV_WORKSPACE_ID;
+
+  const nav = useNavigate();
   const qc = useQueryClient();
 
-  const [selectedLead, setSelectedLead] = useState<LeadApi | null>(null);
-  const [draggedLead, setDraggedLead] = useState<string | null>(null);
+  const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
+  const [draggedLeadId, setDraggedLeadId] = useState<string | null>(null);
 
-  const leadsQ = useQuery({
-    queryKey: ["leads", WORKSPACE()],
-    queryFn: fetchLeads,
-    staleTime: 10_000,
-    retry: 1,
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ["leads", workspaceId],
+    queryFn: async () => {
+      if (!workspaceId) throw new Error("workspace_id missing (VITE_WORKSPACE_ID ou WorkspaceContext)");
+      const r = await apiFetch(`/api/leads?workspace_id=${encodeURIComponent(workspaceId)}`);
+      return (r?.leads ?? []) as Lead[];
+    },
+    enabled: Boolean(workspaceId),
+    staleTime: 5_000,
+    refetchOnWindowFocus: false,
   });
 
-  const serverLeads = leadsQ.data ?? [];
+  const leads = data || [];
 
-  const [localLeads, setLocalLeads] = useState<LeadApi[]>([]);
-  useEffect(() => {
-    setLocalLeads(serverLeads);
-  }, [serverLeads]);
-
-  const updateStageMut = useMutation({
-    mutationFn: patchLeadStage,
-    onSuccess: async () => {
-      await qc.invalidateQueries({ queryKey: ["leads", WORKSPACE()] });
+  const updateStage = useMutation({
+    mutationFn: async (p: { id: string; stage: PipelineStage }) => {
+      if (!workspaceId) throw new Error("workspace_id missing");
+      return apiFetch(`/api/leads`, {
+        method: "PATCH",
+        body: JSON.stringify({ workspace_id: workspaceId, id: p.id, stage: p.stage }),
+      });
     },
-    onError: async () => {
-      await qc.invalidateQueries({ queryKey: ["leads", WORKSPACE()] });
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["leads", workspaceId] });
     },
   });
 
-  const getLeadsByStage = (stage: PipelineStage) => localLeads.filter((l) => safeStage(l.stage) === stage);
+  const leadsByStage = useMemo(() => {
+    const map = new Map<PipelineStage, Lead[]>();
+    for (const s of stages) map.set(s.id, []);
+    for (const l of leads) {
+      const st = (l.stage || "novo") as PipelineStage;
+      if (!map.has(st)) map.set(st, []);
+      map.get(st)!.push(l);
+    }
+    return map;
+  }, [leads]);
 
-  const handleDragStart = (leadId: string) => setDraggedLead(leadId);
+  const handleDragStart = (leadId: string) => setDraggedLeadId(leadId);
   const handleDragOver = (e: React.DragEvent) => e.preventDefault();
 
   const handleDrop = async (stage: PipelineStage) => {
-    if (!draggedLead) return;
+    if (!draggedLeadId) return;
 
-    const leadId = draggedLead;
-    setDraggedLead(null);
+    // otimista (UI instantânea) → depois refetch
+    const original = leads.find((x) => x.id === draggedLeadId);
+    setDraggedLeadId(null);
 
-    setLocalLeads((prev) => prev.map((l) => (l.id === leadId ? { ...l, stage } : l)));
+    if (!original) return;
+    if ((original.stage || "novo") === stage) return;
 
-    await updateStageMut.mutateAsync({ id: leadId, stage });
+    try {
+      await updateStage.mutateAsync({ id: draggedLeadId, stage });
+    } catch {
+      // se falhar, refetch já corrige
+      qc.invalidateQueries({ queryKey: ["leads", workspaceId] });
+    }
   };
+
+  if (isLoading) {
+    return <div className="text-muted-foreground">Carregando pipeline…</div>;
+  }
+
+  if (isError) {
+    return (
+      <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+        <div className="font-semibold">Erro ao carregar Pipeline</div>
+        <div className="mt-1 opacity-90">{String((error as any)?.message || error)}</div>
+        <div className="mt-3 text-xs text-destructive/90">
+          <div>VITE_API_BASE_URL: {API_BASE ? "OK" : "MISSING"}</div>
+          <div>VITE_WORKSPACE_ID: {workspaceId ? "OK" : "MISSING"}</div>
+          <div>VITE_API_TOKEN: {API_TOKEN ? "OK" : "MISSING"}</div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold font-display tracking-tight text-foreground">Pipeline</h1>
-          <p className="text-muted-foreground mt-1">Arraste os leads entre as etapas</p>
+          <p className="text-muted-foreground mt-1">Arraste e solte. Salva no Supabase.</p>
         </div>
       </div>
 
-      {leadsQ.isError && (
-        <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
-          Erro carregando pipeline: {String((leadsQ.error as any)?.message || leadsQ.error)}
-        </div>
-      )}
-
-      {updateStageMut.isError && (
-        <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
-          Falha ao atualizar stage: {String((updateStageMut.error as any)?.message || updateStageMut.error)}
-        </div>
-      )}
-
       <div className="flex gap-4 overflow-x-auto pb-4">
         {stages.map((stage) => {
-          const stageLeads = getLeadsByStage(stage.id);
+          const stageLeads = leadsByStage.get(stage.id) || [];
 
           return (
             <div
@@ -194,6 +193,7 @@ export default function Pipeline() {
                     {stageLeads.length}
                   </Badge>
                 </div>
+
                 <Button variant="ghost" size="icon" className="w-6 h-6 text-muted-foreground" disabled>
                   <Plus className="w-4 h-4" />
                 </Button>
@@ -201,40 +201,79 @@ export default function Pipeline() {
 
               <ScrollArea className="h-[500px]">
                 <div className="space-y-3 pr-2">
-                  {stageLeads.map((lead) => (
-                    <div
-                      key={lead.id}
-                      draggable
-                      onDragStart={() => handleDragStart(lead.id)}
-                      onClick={() => setSelectedLead(lead)}
-                      className={cn("kanban-card", draggedLead === lead.id && "opacity-50")}
-                    >
-                      <div className="flex items-start justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                          <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
-                            <span className="text-xs font-semibold text-primary">{initials(lead.name)}</span>
-                          </div>
-                          <div>
-                            <h4 className="font-medium text-sm text-foreground">{lead.name || "Lead"}</h4>
-                            <p className="text-xs text-muted-foreground">{lead.phone || "-"}</p>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <Star className={cn("w-3 h-3", (lead.score ?? 0) >= 80 ? "text-warning fill-warning" : "text-muted-foreground")} />
-                          <span className="text-xs font-medium text-foreground">{lead.score ?? 0}</span>
-                        </div>
-                      </div>
+                  {stageLeads.map((lead) => {
+                    const name = lead.name || "Sem nome";
+                    const phone = lead.phone || "-";
+                    const score = Number(lead.score ?? 0);
+                    const lastMsg = lead.last_message ?? lead.lastMessage ?? "";
+                    const lastAt = lead.last_message_at ?? lead.lastMessageAt ?? "";
+                    const tags = lead.tags ?? [];
+                    const needsFU = Boolean(lead.needs_follow_up ?? lead.needsFollowUp);
 
-                      <p className="text-xs text-muted-foreground mb-3 line-clamp-2">{lead.last_message || "-"}</p>
-
-                      <div className="flex items-center justify-between text-xs">
-                        <div className="flex items-center gap-1 text-muted-foreground">
-                          <Clock className="w-3 h-3" />
-                          {lead.last_message_at ? new Date(lead.last_message_at).toLocaleString() : "-"}
+                    return (
+                      <div
+                        key={lead.id}
+                        draggable
+                        onDragStart={() => handleDragStart(lead.id)}
+                        onClick={() => setSelectedLead(lead)}
+                        className={cn("kanban-card", draggedLeadId === lead.id && "opacity-50")}
+                      >
+                        <div className="flex items-start justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
+                              <span className="text-xs font-semibold text-primary">
+                                {name
+                                  .split(" ")
+                                  .slice(0, 2)
+                                  .map((n) => n[0])
+                                  .join("")}
+                              </span>
+                            </div>
+                            <div>
+                              <h4 className="font-medium text-sm text-foreground">{name}</h4>
+                              <p className="text-xs text-muted-foreground">{phone}</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <Star
+                              className={cn(
+                                "w-3 h-3",
+                                score >= 80 ? "text-warning fill-warning" : "text-muted-foreground"
+                              )}
+                            />
+                            <span className="text-xs font-medium text-foreground">{score}</span>
+                          </div>
                         </div>
+
+                        <p className="text-xs text-muted-foreground mb-3 line-clamp-2">{lastMsg}</p>
+
+                        <div className="flex items-center justify-between text-xs">
+                          <div className="flex items-center gap-1 text-muted-foreground">
+                            <Clock className="w-3 h-3" />
+                            {lastAt}
+                          </div>
+                          {needsFU && (
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] px-1.5 py-0 bg-warning/10 text-warning border-warning/30"
+                            >
+                              Needs Follow-up
+                            </Badge>
+                          )}
+                        </div>
+
+                        {tags.length > 0 && (
+                          <div className="flex gap-1 mt-2">
+                            {tags.slice(0, 2).map((tag) => (
+                              <Badge key={tag} variant="secondary" className="text-[10px] px-1.5 py-0">
+                                {tag}
+                              </Badge>
+                            ))}
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </ScrollArea>
             </div>
@@ -247,7 +286,13 @@ export default function Pipeline() {
           <DialogHeader>
             <DialogTitle className="text-foreground flex items-center gap-3">
               <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
-                <span className="text-sm font-semibold text-primary">{initials(selectedLead?.name)}</span>
+                <span className="text-sm font-semibold text-primary">
+                  {(selectedLead?.name || "S")
+                    .split(" ")
+                    .slice(0, 2)
+                    .map((n) => n[0])
+                    .join("")}
+                </span>
               </div>
               {selectedLead?.name || "Lead"}
             </DialogTitle>
@@ -261,26 +306,30 @@ export default function Pipeline() {
                   <p className="text-sm font-medium text-foreground">{selectedLead.phone || "-"}</p>
                 </div>
                 <div className="bg-secondary/50 rounded-lg p-3">
-                  <p className="text-xs text-muted-foreground mb-1">Source</p>
-                  <p className="text-sm font-medium text-foreground">{selectedLead.source || "-"}</p>
+                  <p className="text-xs text-muted-foreground mb-1">Stage</p>
+                  <p className="text-sm font-medium text-foreground">{selectedLead.stage || "novo"}</p>
                 </div>
                 <div className="bg-secondary/50 rounded-lg p-3">
                   <p className="text-xs text-muted-foreground mb-1">Score</p>
-                  <p className="text-sm font-medium text-foreground">{selectedLead.score ?? 0}/100</p>
+                  <p className="text-sm font-medium text-foreground">{Number(selectedLead.score ?? 0)}/100</p>
                 </div>
                 <div className="bg-secondary/50 rounded-lg p-3">
-                  <p className="text-xs text-muted-foreground mb-1">Stage</p>
-                  <p className="text-sm font-medium text-foreground">{safeStage(selectedLead.stage)}</p>
+                  <p className="text-xs text-muted-foreground mb-1">Last Activity</p>
+                  <p className="text-sm font-medium text-foreground">
+                    {selectedLead.last_message_at ?? selectedLead.lastMessageAt ?? "-"}
+                  </p>
                 </div>
               </div>
 
               <div className="bg-secondary/50 rounded-lg p-3">
-                <p className="text-xs text-muted-foreground mb-2">Follow-up History</p>
+                <p className="text-xs text-muted-foreground mb-2">Follow-up (mock)</p>
                 <div className="space-y-2">
                   <div className="flex items-center gap-2 text-sm">
                     <Calendar className="w-4 h-4 text-primary" />
                     <span className="text-foreground">D+0 - Initial contact</span>
-                    <Badge variant="secondary" className="text-[10px]">Sent</Badge>
+                    <Badge variant="secondary" className="text-[10px]">
+                      Sent
+                    </Badge>
                   </div>
                 </div>
               </div>
@@ -288,19 +337,19 @@ export default function Pipeline() {
               <div className="flex gap-2">
                 <Button
                   className="flex-1 btn-premium"
-                  onClick={() => {
-                    // navega SEM depender do Inbox estar “pronto”
-                    navigate(`/inbox?lead_id=${encodeURIComponent(selectedLead.id)}`);
-                  }}
+                  onClick={() => nav(`/inbox?lead_id=${encodeURIComponent(selectedLead.id)}`)}
                 >
                   <MessageSquare className="w-4 h-4 mr-2" />
                   Open Chat
                 </Button>
-
-                <Button variant="outline" className="flex-1 border-border text-muted-foreground">
-                  Edit Lead
+                <Button variant="outline" className="flex-1 border-border text-muted-foreground" onClick={() => setSelectedLead(null)}>
+                  Fechar
                 </Button>
               </div>
+
+              {updateStage.isPending && (
+                <div className="text-xs text-muted-foreground">Salvando mudança de stage…</div>
+              )}
             </div>
           )}
         </DialogContent>
