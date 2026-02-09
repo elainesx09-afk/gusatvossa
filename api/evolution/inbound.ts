@@ -84,27 +84,7 @@ async function saveRawEventBestEffort(params: {
       payload: params.payload,
       created_at: new Date().toISOString(),
     });
-  } catch {
-    // nunca derruba o inbound
-  }
-}
-
-async function getWorkspaceApiTokenBestEffort(workspaceId: string) {
-  const supabase = await getSupabaseAdminIfAvailable();
-  if (!supabase) return null;
-
-  try {
-    const { data, error } = await supabase
-      .from('workspaces')
-      .select('api_token')
-      .eq('id', workspaceId)
-      .maybeSingle();
-
-    if (error) return null;
-    return data?.api_token ?? null;
-  } catch {
-    return null;
-  }
+  } catch {}
 }
 
 async function forwardToMockInbound(req: VercelRequest, params: {
@@ -142,7 +122,6 @@ async function forwardToMockInbound(req: VercelRequest, params: {
     headers: {
       'Content-Type': 'application/json',
       'x-api-token': params.apiToken,
-      // compat: seu backend pode ler query; mas mantemos header se você atualizar depois
       'x-workspace-id': params.workspaceId,
       'workspace_id': params.workspaceId,
     },
@@ -165,13 +144,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const workspaceId = String((req.query as any)?.workspace_id || '').trim();
     const instanceName = String((req.query as any)?.instance || '').trim();
+    const apiTokenFromQuery = String((req.query as any)?.api_token || '').trim();
     const sig = String((req.query as any)?.sig || '').trim();
 
     if (!workspaceId || !instanceName) {
       return send(res, 200, { ok: true, debugId, ignored: true, reason: 'missing workspace_id/instance' });
     }
 
-    // assinatura opcional (se setar secret, exige)
     const secret = process.env.EVOLUTION_WEBHOOK_SECRET?.trim() || '';
     if (secret) {
       const expected = hmacSig(secret, workspaceId, instanceName);
@@ -183,15 +162,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const payload = req.body || {};
     const eventType = String(payload?.event || payload?.type || 'UNKNOWN');
-
-    // log bruto (zero perda)
     await saveRawEventBestEffort({ workspaceId, instanceName, eventType, payload });
 
     const eventUpper = eventType.toUpperCase();
     const isMessageEvent = eventUpper.includes('MESSAGES') || eventUpper.includes('MESSAGE');
-    if (!isMessageEvent) {
-      return send(res, 200, { ok: true, debugId, captured: true, processed: false, eventType });
-    }
+    if (!isMessageEvent) return send(res, 200, { ok: true, debugId, captured: true, processed: false, eventType });
 
     const msg = extractFirstMessage(payload);
     const key = msg?.key || {};
@@ -199,9 +174,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const fromMe = !!(key?.fromMe ?? msg?.fromMe ?? false);
     const externalMessageId = (key?.id || msg?.id || null) ? String(key?.id || msg?.id) : null;
 
-    if (fromMe) {
-      return send(res, 200, { ok: true, debugId, captured: true, processed: false, reason: 'fromMe' });
-    }
+    if (fromMe) return send(res, 200, { ok: true, debugId, captured: true, processed: false, reason: 'fromMe' });
 
     const phone = normalizePhoneFromJid(remoteJid);
     const name = (payload?.data?.pushName || msg?.pushName || payload?.pushName || null)
@@ -209,15 +182,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       : null;
     const text = extractText(msg?.message || msg?.msg || msg);
 
-    const apiToken = await getWorkspaceApiTokenBestEffort(workspaceId);
-    if (!apiToken) {
-      // não derruba: registra e sai
-      return send(res, 200, { ok: true, debugId, captured: true, processed: false, reason: 'workspace api_token not found (supabase env?)' });
+    if (!apiTokenFromQuery) {
+      return send(res, 200, { ok: true, debugId, captured: true, processed: false, reason: 'missing api_token in query' });
     }
 
     const forwarded = await forwardToMockInbound(req, {
       workspaceId,
-      apiToken,
+      apiToken: apiTokenFromQuery,
       instanceName,
       phone,
       name,
@@ -229,7 +200,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     return send(res, 200, { ok: true, debugId, captured: true, processed: true, forwarded });
   } catch (e: any) {
-    // inbound NUNCA pode quebrar: sempre 200
     return send(res, 200, { ok: true, debugId, captured: false, processed: false, error: String(e?.message || e) });
   }
 }
