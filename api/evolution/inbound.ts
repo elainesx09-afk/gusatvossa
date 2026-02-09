@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import crypto from 'node:crypto';
+import { handleOptions, setCors } from '../_lib/auth';
 
 type Json = Record<string, any>;
 
@@ -7,18 +8,6 @@ function json(res: VercelResponse, status: number, body: Json) {
   res.status(status);
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.end(JSON.stringify(body));
-}
-
-function enableCors(req: VercelRequest, res: VercelResponse) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') {
-    res.statusCode = 204;
-    res.end('');
-    return true;
-  }
-  return false;
 }
 
 function mustEnv(name: string) {
@@ -85,12 +74,7 @@ async function getWorkspaceApiToken(workspaceId: string) {
   return data?.api_token || null;
 }
 
-async function saveRawEvent(params: {
-  workspaceId: string;
-  instanceName: string;
-  eventType: string;
-  payload: any;
-}) {
+async function saveRawEvent(params: { workspaceId: string; instanceName: string; eventType: string; payload: any; }) {
   const supabase = await getSupabaseAdmin();
   const row: any = {
     workspace_id: params.workspaceId,
@@ -99,9 +83,7 @@ async function saveRawEvent(params: {
     payload: params.payload,
     created_at: new Date().toISOString(),
   };
-  const { error } = await supabase.from('wa_webhook_events').insert(row);
-  if (error) return { ok: false, error: error.message };
-  return { ok: true };
+  await supabase.from('wa_webhook_events').insert(row);
 }
 
 async function forwardToMockInbound(req: VercelRequest, params: {
@@ -140,6 +122,7 @@ async function forwardToMockInbound(req: VercelRequest, params: {
     headers: {
       'Content-Type': 'application/json',
       'x-api-token': params.apiToken,
+      'x-workspace-id': params.workspaceId,
       'workspace_id': params.workspaceId,
     },
     body: JSON.stringify(body),
@@ -153,15 +136,17 @@ async function forwardToMockInbound(req: VercelRequest, params: {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  setCors(res);
+  if (handleOptions(req, res)) return;
+
   const debugId = crypto.randomUUID();
 
   try {
-    if (enableCors(req, res)) return;
     if (req.method !== 'POST') return json(res, 405, { ok: false, debugId, error: 'METHOD_NOT_ALLOWED' });
 
-    const workspaceId = String(req.query.workspace_id || '').trim();
-    const instanceName = String(req.query.instance || '').trim();
-    const sig = String(req.query.sig || '').trim();
+    const workspaceId = String((req.query as any)?.workspace_id || '').trim();
+    const instanceName = String((req.query as any)?.instance || '').trim();
+    const sig = String((req.query as any)?.sig || '').trim();
 
     if (!workspaceId || !instanceName) {
       return json(res, 200, { ok: true, debugId, ignored: true, reason: 'missing workspace_id/instance' });
@@ -188,7 +173,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const msg = extractFirstMessage(payload);
     const key = msg?.key || {};
-    const remoteJid = key?.remoteJid || msg?.remoteJid || payload?.data?.key?.remoteJid || null;
+    const remoteJid = key?.remoteJid || msg?.remoteJid || (payload?.data?.key?.remoteJid ?? null);
     const fromMe = !!(key?.fromMe ?? msg?.fromMe ?? false);
     const externalMessageId = (key?.id || msg?.id || null) ? String(key?.id || msg?.id) : null;
     const phone = normalizePhoneFromJid(remoteJid);
@@ -207,15 +192,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const forwarded = await forwardToMockInbound(req, {
-      workspaceId,
-      apiToken,
-      instanceName,
-      phone,
-      name,
-      text,
-      externalMessageId,
-      fromMe,
-      raw: payload,
+      workspaceId, apiToken, instanceName, phone, name, text, externalMessageId, fromMe, raw: payload,
     });
 
     return json(res, 200, { ok: true, debugId, captured: true, processed: true, forwarded });
