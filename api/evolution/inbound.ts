@@ -1,19 +1,23 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import crypto from 'node:crypto';
-import { handleOptions, setCors } from '../_lib/auth';
 
 type Json = Record<string, any>;
 
-function json(res: VercelResponse, status: number, body: Json) {
+function send(res: VercelResponse, status: number, body: Json) {
   res.status(status);
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.end(JSON.stringify(body));
 }
 
-function mustEnv(name: string) {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing env: ${name}`);
-  return v;
+function cors(req: VercelRequest, res: VercelResponse) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') {
+    res.status(204).end('');
+    return true;
+  }
+  return false;
 }
 
 function getAppBaseUrl(req: VercelRequest) {
@@ -55,35 +59,52 @@ function extractFirstMessage(payload: any) {
   return null;
 }
 
-async function getSupabaseAdmin() {
+async function getSupabaseAdminIfAvailable() {
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) return null;
   const { createClient } = await import('@supabase/supabase-js');
-  const url = mustEnv('SUPABASE_URL');
-  const key = mustEnv('SUPABASE_SERVICE_ROLE_KEY');
-  return createClient(url, key, { auth: { persistSession: false } });
+  return createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false },
+  });
 }
 
-async function getWorkspaceApiToken(workspaceId: string) {
-  const supabase = await getSupabaseAdmin();
-  const { data, error } = await supabase
-    .from('workspaces')
-    .select('api_token')
-    .eq('id', workspaceId)
-    .maybeSingle();
+async function saveRawEventBestEffort(params: {
+  workspaceId: string;
+  instanceName: string;
+  eventType: string;
+  payload: any;
+}) {
+  const supabase = await getSupabaseAdminIfAvailable();
+  if (!supabase) return;
 
-  if (error) throw new Error(`Workspace lookup failed: ${error.message}`);
-  return data?.api_token || null;
+  try {
+    await supabase.from('wa_webhook_events').insert({
+      workspace_id: params.workspaceId,
+      instance_name: params.instanceName,
+      event_type: params.eventType,
+      payload: params.payload,
+      created_at: new Date().toISOString(),
+    });
+  } catch {
+    // nunca derruba o inbound
+  }
 }
 
-async function saveRawEvent(params: { workspaceId: string; instanceName: string; eventType: string; payload: any; }) {
-  const supabase = await getSupabaseAdmin();
-  const row: any = {
-    workspace_id: params.workspaceId,
-    instance_name: params.instanceName,
-    event_type: params.eventType,
-    payload: params.payload,
-    created_at: new Date().toISOString(),
-  };
-  await supabase.from('wa_webhook_events').insert(row);
+async function getWorkspaceApiTokenBestEffort(workspaceId: string) {
+  const supabase = await getSupabaseAdminIfAvailable();
+  if (!supabase) return null;
+
+  try {
+    const { data, error } = await supabase
+      .from('workspaces')
+      .select('api_token')
+      .eq('id', workspaceId)
+      .maybeSingle();
+
+    if (error) return null;
+    return data?.api_token ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function forwardToMockInbound(req: VercelRequest, params: {
@@ -97,8 +118,7 @@ async function forwardToMockInbound(req: VercelRequest, params: {
   fromMe: boolean;
   raw: any;
 }) {
-  const appBaseUrl = getAppBaseUrl(req);
-  const url = `${appBaseUrl}/api/mock-inbound`;
+  const url = `${getAppBaseUrl(req)}/api/mock-inbound`;
 
   const body = {
     workspace_id: params.workspaceId,
@@ -122,6 +142,7 @@ async function forwardToMockInbound(req: VercelRequest, params: {
     headers: {
       'Content-Type': 'application/json',
       'x-api-token': params.apiToken,
+      // compat: seu backend pode ler query; mas mantemos header se você atualizar depois
       'x-workspace-id': params.workspaceId,
       'workspace_id': params.workspaceId,
     },
@@ -136,39 +157,40 @@ async function forwardToMockInbound(req: VercelRequest, params: {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  setCors(res);
-  if (handleOptions(req, res)) return;
-
-  const debugId = crypto.randomUUID();
+  const debugId = `in_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
 
   try {
-    if (req.method !== 'POST') return json(res, 405, { ok: false, debugId, error: 'METHOD_NOT_ALLOWED' });
+    if (cors(req, res)) return;
+    if (req.method !== 'POST') return send(res, 200, { ok: true, debugId, ignored: true, reason: 'METHOD_NOT_ALLOWED' });
 
     const workspaceId = String((req.query as any)?.workspace_id || '').trim();
     const instanceName = String((req.query as any)?.instance || '').trim();
     const sig = String((req.query as any)?.sig || '').trim();
 
     if (!workspaceId || !instanceName) {
-      return json(res, 200, { ok: true, debugId, ignored: true, reason: 'missing workspace_id/instance' });
+      return send(res, 200, { ok: true, debugId, ignored: true, reason: 'missing workspace_id/instance' });
     }
 
+    // assinatura opcional (se setar secret, exige)
     const secret = process.env.EVOLUTION_WEBHOOK_SECRET?.trim() || '';
     if (secret) {
       const expected = hmacSig(secret, workspaceId, instanceName);
       if (!sig || sig !== expected) {
-        await saveRawEvent({ workspaceId, instanceName, eventType: 'INVALID_SIGNATURE', payload: req.body || null });
-        return json(res, 200, { ok: true, debugId, ignored: true, reason: 'invalid signature' });
+        await saveRawEventBestEffort({ workspaceId, instanceName, eventType: 'INVALID_SIGNATURE', payload: req.body || null });
+        return send(res, 200, { ok: true, debugId, ignored: true, reason: 'invalid signature' });
       }
     }
 
     const payload = req.body || {};
     const eventType = String(payload?.event || payload?.type || 'UNKNOWN');
-    await saveRawEvent({ workspaceId, instanceName, eventType, payload });
+
+    // log bruto (zero perda)
+    await saveRawEventBestEffort({ workspaceId, instanceName, eventType, payload });
 
     const eventUpper = eventType.toUpperCase();
     const isMessageEvent = eventUpper.includes('MESSAGES') || eventUpper.includes('MESSAGE');
     if (!isMessageEvent) {
-      return json(res, 200, { ok: true, debugId, captured: true, processed: false, eventType });
+      return send(res, 200, { ok: true, debugId, captured: true, processed: false, eventType });
     }
 
     const msg = extractFirstMessage(payload);
@@ -176,27 +198,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const remoteJid = key?.remoteJid || msg?.remoteJid || (payload?.data?.key?.remoteJid ?? null);
     const fromMe = !!(key?.fromMe ?? msg?.fromMe ?? false);
     const externalMessageId = (key?.id || msg?.id || null) ? String(key?.id || msg?.id) : null;
+
+    if (fromMe) {
+      return send(res, 200, { ok: true, debugId, captured: true, processed: false, reason: 'fromMe' });
+    }
+
     const phone = normalizePhoneFromJid(remoteJid);
     const name = (payload?.data?.pushName || msg?.pushName || payload?.pushName || null)
       ? String(payload?.data?.pushName || msg?.pushName || payload?.pushName)
       : null;
     const text = extractText(msg?.message || msg?.msg || msg);
 
-    if (fromMe) {
-      return json(res, 200, { ok: true, debugId, captured: true, processed: false, reason: 'fromMe' });
-    }
-
-    const apiToken = await getWorkspaceApiToken(workspaceId);
+    const apiToken = await getWorkspaceApiTokenBestEffort(workspaceId);
     if (!apiToken) {
-      return json(res, 200, { ok: true, debugId, captured: true, processed: false, reason: 'workspace api_token missing' });
+      // não derruba: registra e sai
+      return send(res, 200, { ok: true, debugId, captured: true, processed: false, reason: 'workspace api_token not found (supabase env?)' });
     }
 
     const forwarded = await forwardToMockInbound(req, {
-      workspaceId, apiToken, instanceName, phone, name, text, externalMessageId, fromMe, raw: payload,
+      workspaceId,
+      apiToken,
+      instanceName,
+      phone,
+      name,
+      text,
+      externalMessageId,
+      fromMe,
+      raw: payload,
     });
 
-    return json(res, 200, { ok: true, debugId, captured: true, processed: true, forwarded });
+    return send(res, 200, { ok: true, debugId, captured: true, processed: true, forwarded });
   } catch (e: any) {
-    return json(res, 200, { ok: true, debugId, captured: false, processed: false, error: String(e?.message || e) });
+    // inbound NUNCA pode quebrar: sempre 200
+    return send(res, 200, { ok: true, debugId, captured: false, processed: false, error: String(e?.message || e) });
   }
 }
