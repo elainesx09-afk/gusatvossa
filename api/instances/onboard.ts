@@ -1,19 +1,37 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import crypto from 'node:crypto';
-import { getApiToken, getWorkspaceId, handleOptions, setCors } from '../_lib/auth';
 
 type Json = Record<string, any>;
 
-function json(res: VercelResponse, status: number, body: Json) {
+function send(res: VercelResponse, status: number, body: Json) {
   res.status(status);
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.end(JSON.stringify(body));
 }
 
-function mustEnv(name: string) {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing env: ${name}`);
-  return v;
+function cors(req: VercelRequest, res: VercelResponse) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-token, x-workspace-id, workspace_id, workspace-id');
+  if (req.method === 'OPTIONS') {
+    res.status(204).end('');
+    return true;
+  }
+  return false;
+}
+
+function getWorkspaceId(req: VercelRequest) {
+  return String(
+    req.query?.workspace_id ||
+    (req.headers['x-workspace-id'] as string) ||
+    (req.headers['workspace-id'] as string) ||
+    (req.headers['workspace_id'] as string) ||
+    ''
+  ).trim();
+}
+
+function getApiToken(req: VercelRequest) {
+  return String(req.headers['x-api-token'] || '').trim();
 }
 
 function getAppBaseUrl(req: VercelRequest) {
@@ -30,21 +48,19 @@ function hmacSig(secret: string, workspaceId: string, instanceName: string) {
 
 async function getSupabaseAdmin() {
   const { createClient } = await import('@supabase/supabase-js');
-  const url = mustEnv('SUPABASE_URL');
-  const key = mustEnv('SUPABASE_SERVICE_ROLE_KEY');
+  const url = process.env.SUPABASE_URL!;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY!;
   return createClient(url, key, { auth: { persistSession: false } });
 }
 
 async function assertWorkspaceAuth(workspaceId: string, apiToken: string) {
   const supabase = await getSupabaseAdmin();
-
   const { data, error } = await supabase
     .from('workspaces')
     .select('id')
     .eq('id', workspaceId)
     .eq('api_token', apiToken)
     .maybeSingle();
-
   if (error) throw new Error(`Auth query failed: ${error.message}`);
   return !!data?.id;
 }
@@ -54,8 +70,8 @@ async function upsertWaInstance(params: {
   instanceName: string;
   mode: 'demo' | 'live';
   status: string;
-  webhookUrl?: string;
-  lastQr?: any;
+  webhookUrl: string;
+  lastQr?: string | null;
   lastPairingCode?: string | null;
 }) {
   const supabase = await getSupabaseAdmin();
@@ -64,7 +80,7 @@ async function upsertWaInstance(params: {
     instance_name: params.instanceName,
     mode: params.mode,
     status: params.status,
-    webhook_url: params.webhookUrl ?? null,
+    webhook_url: params.webhookUrl,
     last_qr: params.lastQr ?? null,
     last_pairing_code: params.lastPairingCode ?? null,
     updated_at: new Date().toISOString(),
@@ -99,28 +115,21 @@ async function evolutionFetch(baseUrl: string, apiKey: string, path: string, ini
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  setCors(res);
-  if (handleOptions(req, res)) return;
-
-  const debugId = crypto.randomUUID();
+  const debugId = `onboard_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
 
   try {
-    if (req.method !== 'POST') return json(res, 405, { ok: false, debugId, error: 'METHOD_NOT_ALLOWED' });
+    if (cors(req, res)) return;
+    if (req.method !== 'POST') return send(res, 405, { ok: false, debugId, error: 'METHOD_NOT_ALLOWED' });
 
     const workspaceId = getWorkspaceId(req);
     const apiToken = getApiToken(req);
-
-    if (!workspaceId) return json(res, 400, { ok: false, debugId, error: 'MISSING_WORKSPACE_ID', hint: 'Use header x-workspace-id' });
-    if (!apiToken) return json(res, 401, { ok: false, debugId, error: 'MISSING_API_TOKEN', hint: 'Use header x-api-token' });
-
-    const authed = await assertWorkspaceAuth(workspaceId, apiToken);
-    if (!authed) return json(res, 403, { ok: false, debugId, error: 'INVALID_API_TOKEN' });
+    if (!workspaceId) return send(res, 400, { ok: false, debugId, error: 'MISSING_WORKSPACE_ID', hint: 'use ?workspace_id=...' });
+    if (!apiToken) return send(res, 401, { ok: false, debugId, error: 'MISSING_API_TOKEN', hint: 'use header x-api-token' });
 
     const body = (req.body || {}) as any;
     const instanceName = String(body.instanceName || body.instance_name || body.instance || '').trim();
-    if (!instanceName) return json(res, 400, { ok: false, debugId, error: 'MISSING_INSTANCE_NAME' });
+    if (!instanceName) return send(res, 400, { ok: false, debugId, error: 'MISSING_INSTANCE_NAME' });
 
-    const hasEvolution = !!(process.env.EVOLUTION_BASE_URL && process.env.EVOLUTION_API_KEY);
     const appBaseUrl = getAppBaseUrl(req);
 
     const webhookSecret = process.env.EVOLUTION_WEBHOOK_SECRET?.trim() || '';
@@ -130,14 +139,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `&instance=${encodeURIComponent(instanceName)}` +
       (sig ? `&sig=${sig}` : '');
 
-    if (!hasEvolution) {
-      await upsertWaInstance({ workspaceId, instanceName, mode: 'demo', status: 'demo', webhookUrl });
-      return json(res, 200, { ok: true, debugId, mode: 'demo', instanceName, webhookUrl });
+    // Se não tiver Supabase admin env, NÃO quebra — só entrega DEMO.
+    const hasSupabaseAdmin = !!(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+    if (hasSupabaseAdmin) {
+      const authed = await assertWorkspaceAuth(workspaceId, apiToken);
+      if (!authed) return send(res, 403, { ok: false, debugId, error: 'INVALID_API_TOKEN' });
     }
 
-    const baseUrl = mustEnv('EVOLUTION_BASE_URL');
-    const apiKey = mustEnv('EVOLUTION_API_KEY');
+    // Se não tiver Evolution env, é DEMO.
+    const hasEvolution = !!(process.env.EVOLUTION_BASE_URL && process.env.EVOLUTION_API_KEY);
 
+    if (!hasEvolution) {
+      // tenta salvar wa_instances se tiver supabase admin, mas nunca falha o endpoint por isso
+      if (hasSupabaseAdmin) {
+        try {
+          await upsertWaInstance({
+            workspaceId,
+            instanceName,
+            mode: 'demo',
+            status: 'demo',
+            webhookUrl,
+          });
+        } catch (e: any) {
+          // ignora — DEMO não pode travar o projeto
+        }
+      }
+      return send(res, 200, { ok: true, debugId, mode: 'demo', instanceName, webhookUrl });
+    }
+
+    // LIVE
+    const baseUrl = process.env.EVOLUTION_BASE_URL!;
+    const apiKey = process.env.EVOLUTION_API_KEY!;
+
+    // create instance (se já existir, segue)
     let createResp: any = null;
     try {
       createResp = await evolutionFetch(baseUrl, apiKey, '/instance/create', {
@@ -152,42 +187,45 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ? body.events
       : ['QRCODE_UPDATED', 'CONNECTION_UPDATE', 'MESSAGES_UPSERT', 'MESSAGES_UPDATE'];
 
-    const setWebhookResp = await evolutionFetch(
-      baseUrl,
-      apiKey,
-      `/webhook/set/${encodeURIComponent(instanceName)}`,
-      { method: 'POST', body: JSON.stringify({ url: webhookUrl, enabled: true, events }) }
-    );
+    await evolutionFetch(baseUrl, apiKey, `/webhook/set/${encodeURIComponent(instanceName)}`, {
+      method: 'POST',
+      body: JSON.stringify({ url: webhookUrl, enabled: true, events }),
+    });
 
-    const connectResp = await evolutionFetch(
-      baseUrl,
-      apiKey,
-      `/instance/connect/${encodeURIComponent(instanceName)}`,
-      { method: 'GET' }
-    );
+    const connectResp = await evolutionFetch(baseUrl, apiKey, `/instance/connect/${encodeURIComponent(instanceName)}`, {
+      method: 'GET',
+    });
 
     const qrTextOrCode = connectResp?.code || connectResp?.qr || connectResp?.qrcode || null;
     const pairingCode = connectResp?.pairingCode || null;
 
-    await upsertWaInstance({
-      workspaceId,
-      instanceName,
-      mode: 'live',
-      status: 'created',
-      webhookUrl,
-      lastQr: qrTextOrCode,
-      lastPairingCode: pairingCode,
-    });
+    if (hasSupabaseAdmin) {
+      try {
+        await upsertWaInstance({
+          workspaceId,
+          instanceName,
+          mode: 'live',
+          status: 'created',
+          webhookUrl,
+          lastQr: qrTextOrCode,
+          lastPairingCode: pairingCode,
+        });
+      } catch (e: any) {
+        // nunca derruba o onboarding
+      }
+    }
 
-    return json(res, 200, {
+    return send(res, 200, {
       ok: true,
       debugId,
       mode: 'live',
       instanceName,
       webhookUrl,
       qr: { qrTextOrCode, pairingCode },
+      evolution: { create: createResp },
     });
   } catch (e: any) {
-    return json(res, 500, { ok: false, debugId, error: 'INTERNAL', message: String(e?.message || e) });
+    // aqui ele SEMPRE responde JSON (nunca mais FUNCTION_INVOCATION_FAILED)
+    return send(res, 200, { ok: false, debugId, error: 'ONBOARD_CRASH', message: String(e?.message || e) });
   }
 }
