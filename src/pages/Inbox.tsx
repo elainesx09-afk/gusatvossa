@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Search, Send, Phone, UserPlus, ArrowRight, Image, Mic, MoreHorizontal, RefreshCw } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -47,12 +47,14 @@ function headersJson() {
 
 function initials(name?: string | null) {
   const s = String(name || "Lead").trim();
-  return s
-    .split(" ")
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((n) => n[0]?.toUpperCase())
-    .join("") || "L";
+  return (
+    s
+      .split(" ")
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((n) => n[0]?.toUpperCase())
+      .join("") || "L"
+  );
 }
 
 function fmtTime(v?: string | null) {
@@ -75,12 +77,17 @@ async function getLeads(): Promise<LeadApi[]> {
   return j.leads ?? [];
 }
 
-async function getMessages(leadId: string): Promise<MessageApi[]> {
+async function getMessages(args: { leadId: string }): Promise<MessageApi[]> {
   const base = BASE();
   const token = TOKEN();
-  if (!base || !token) throw new Error("Env faltando: VITE_API_BASE_URL, VITE_API_TOKEN");
+  const workspaceId = WORKSPACE();
+  if (!base || !token || !workspaceId) throw new Error("Env faltando: VITE_API_BASE_URL, VITE_API_TOKEN, VITE_WORKSPACE_ID");
 
-  const r = await fetch(`${base}/api/messages?lead_id=${encodeURIComponent(leadId)}`, { headers: headers() });
+  // ✅ seu backend exige lead_id e estamos padronizando workspace_id via query também
+  const r = await fetch(
+    `${base}/api/messages?workspace_id=${encodeURIComponent(workspaceId)}&lead_id=${encodeURIComponent(args.leadId)}`,
+    { headers: headers() }
+  );
   const j = await r.json().catch(() => null);
   if (!r.ok) throw new Error(j?.error || j?.details?.message || `HTTP ${r.status}`);
   if (!j?.ok) throw new Error(j?.error || "ok=false");
@@ -116,6 +123,7 @@ async function sendMessage(args: { leadId: string; text: string }) {
 export default function Inbox() {
   const qc = useQueryClient();
   const location = useLocation();
+  const navigate = useNavigate();
 
   const leadFromUrl = useMemo(() => {
     const q = new URLSearchParams(location.search);
@@ -135,8 +143,14 @@ export default function Inbox() {
 
   const leads = leadsQ.data ?? [];
 
+  // ✅ sempre mantém lead_id na URL (deep link e evita “sem lead”)
   useEffect(() => {
     if (!leads.length) return;
+
+    const pick = (id: string) => {
+      setSelectedLeadId(id);
+      navigate(`/inbox?lead_id=${encodeURIComponent(id)}`, { replace: true });
+    };
 
     if (leadFromUrl) {
       const exists = leads.some((l) => l.id === leadFromUrl);
@@ -146,8 +160,8 @@ export default function Inbox() {
       }
     }
 
-    if (!selectedLeadId) setSelectedLeadId(leads[0].id);
-  }, [leads, leadFromUrl, selectedLeadId]);
+    if (!selectedLeadId) pick(leads[0].id);
+  }, [leads, leadFromUrl, selectedLeadId, navigate]);
 
   const selectedLead = leads.find((l) => l.id === selectedLeadId) || null;
 
@@ -163,20 +177,22 @@ export default function Inbox() {
   }, [leads, searchQuery]);
 
   const messagesQ = useQuery({
-    queryKey: ["messages", selectedLeadId],
-    queryFn: () => getMessages(selectedLeadId as string),
+    queryKey: ["messages", selectedLeadId, WORKSPACE()],
+    queryFn: () => getMessages({ leadId: selectedLeadId as string }),
     enabled: !!selectedLeadId,
     staleTime: 2_000,
     retry: 1,
   });
 
-  const messages = (messagesQ.data ?? []).slice().sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  const messages = (messagesQ.data ?? [])
+    .slice()
+    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
 
   const sendMut = useMutation({
     mutationFn: sendMessage,
     onSuccess: async () => {
       setMessageInput("");
-      await qc.invalidateQueries({ queryKey: ["messages", selectedLeadId] });
+      await qc.invalidateQueries({ queryKey: ["messages", selectedLeadId, WORKSPACE()] });
       await qc.invalidateQueries({ queryKey: ["leads", WORKSPACE()] });
     },
   });
@@ -229,7 +245,10 @@ export default function Inbox() {
               return (
                 <div
                   key={lead.id}
-                  onClick={() => setSelectedLeadId(lead.id)}
+                  onClick={() => {
+                    setSelectedLeadId(lead.id);
+                    navigate(`/inbox?lead_id=${encodeURIComponent(lead.id)}`, { replace: true });
+                  }}
                   className={cn(
                     "flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-colors",
                     selectedLeadId === lead.id ? "bg-primary/10 border border-primary/20" : "hover:bg-secondary/50"
