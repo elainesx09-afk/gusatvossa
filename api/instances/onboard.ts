@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import crypto from 'node:crypto';
+import { getApiToken, getWorkspaceId, handleOptions, setCors } from '../_lib/auth';
 
 type Json = Record<string, any>;
 
@@ -9,16 +10,10 @@ function json(res: VercelResponse, status: number, body: Json) {
   res.end(JSON.stringify(body));
 }
 
-function enableCors(req: VercelRequest, res: VercelResponse) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-token, workspace_id');
-  if (req.method === 'OPTIONS') {
-    res.statusCode = 204;
-    res.end('');
-    return true;
-  }
-  return false;
+function mustEnv(name: string) {
+  const v = process.env[name];
+  if (!v) throw new Error(`Missing env: ${name}`);
+  return v;
 }
 
 function getAppBaseUrl(req: VercelRequest) {
@@ -27,12 +22,6 @@ function getAppBaseUrl(req: VercelRequest) {
   const proto = (req.headers['x-forwarded-proto'] as string) || 'https';
   const host = (req.headers['x-forwarded-host'] as string) || (req.headers.host as string);
   return `${proto}://${host}`.replace(/\/+$/, '');
-}
-
-function mustEnv(name: string) {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing env: ${name}`);
-  return v;
 }
 
 function hmacSig(secret: string, workspaceId: string, instanceName: string) {
@@ -48,6 +37,7 @@ async function getSupabaseAdmin() {
 
 async function assertWorkspaceAuth(workspaceId: string, apiToken: string) {
   const supabase = await getSupabaseAdmin();
+
   const { data, error } = await supabase
     .from('workspaces')
     .select('id')
@@ -109,16 +99,19 @@ async function evolutionFetch(baseUrl: string, apiKey: string, path: string, ini
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  setCors(res);
+  if (handleOptions(req, res)) return;
+
   const debugId = crypto.randomUUID();
 
   try {
-    if (enableCors(req, res)) return;
-
     if (req.method !== 'POST') return json(res, 405, { ok: false, debugId, error: 'METHOD_NOT_ALLOWED' });
 
-    const workspaceId = (req.headers['workspace_id'] as string) || '';
-    const apiToken = (req.headers['x-api-token'] as string) || '';
-    if (!workspaceId || !apiToken) return json(res, 401, { ok: false, debugId, error: 'MISSING_AUTH_HEADERS' });
+    const workspaceId = getWorkspaceId(req);
+    const apiToken = getApiToken(req);
+
+    if (!workspaceId) return json(res, 400, { ok: false, debugId, error: 'MISSING_WORKSPACE_ID', hint: 'Use header x-workspace-id' });
+    if (!apiToken) return json(res, 401, { ok: false, debugId, error: 'MISSING_API_TOKEN', hint: 'Use header x-api-token' });
 
     const authed = await assertWorkspaceAuth(workspaceId, apiToken);
     if (!authed) return json(res, 403, { ok: false, debugId, error: 'INVALID_API_TOKEN' });
@@ -192,7 +185,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       mode: 'live',
       instanceName,
       webhookUrl,
-      evolution: { create: createResp, webhook: setWebhookResp, connect: connectResp },
       qr: { qrTextOrCode, pairingCode },
     });
   } catch (e: any) {
