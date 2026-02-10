@@ -17,13 +17,41 @@ function pickString(v: unknown): string | null {
   return null;
 }
 
+function isMissingTableError(err: any): boolean {
+  const code = String(err?.code || '');
+  const msg = String(err?.message || '').toLowerCase();
+
+  // PostgREST: table not found in schema cache
+  if (code === 'PGRST205') return true;
+
+  // Common message patterns
+  if (msg.includes("could not find the table")) return true;
+  if (msg.includes("schema cache")) return true;
+  if (msg.includes("does not exist")) return true;
+  if (msg.includes("relation")) return true;
+  if (msg.includes("not found")) return true;
+
+  return false;
+}
+
+function isMissingColumnError(err: any): boolean {
+  const code = String(err?.code || '');
+  const msg = String(err?.message || '').toLowerCase();
+
+  // PostgREST sometimes uses these for bad requests / missing columns
+  if (code === 'PGRST204') return true;
+
+  if (msg.includes('column')) return true;
+  if (msg.includes('does not exist')) return true;
+
+  return false;
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   setCors(res);
 
   if (req.method === 'OPTIONS') return res.status(200).send('');
-  if (req.method !== 'GET') {
-    return res.status(405).json({ ok: false, error: 'method_not_allowed' });
-  }
+  if (req.method !== 'GET') return res.status(405).json({ ok: false, error: 'method_not_allowed' });
 
   const debugId = `instances_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 
@@ -42,7 +70,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(401).json({ ok: false, debugId, error: 'unauthorized' });
     }
 
-    // workspace_id: aceita query OU header
+    // workspace_id: query OU header
     const workspaceId =
       pickString(req.query.workspace_id) ||
       pickString(req.headers['workspace_id']) ||
@@ -69,53 +97,57 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    const supabase = createClient(supabaseUrl, serviceKey, {
-      auth: { persistSession: false },
-    });
+    const supabase = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
 
-    // Tabelas possíveis (pra não quebrar se seu schema tiver nome diferente)
-    const tablesToTry = ['instance', 'instances', 'whatsapp_instance', 'wa_instance'];
+    // ✅ Coloca wa_instance primeiro (o seu Supabase já sugeriu isso)
+    const tablesToTry = ['wa_instance', 'whatsapp_instance', 'instances', 'instance'];
+
+    // tenta workspace columns possíveis (pra não quebrar se o schema variar)
+    const workspaceColsToTry = ['workspace_id', 'workspaceId', 'workspace'];
 
     let lastErr: any = null;
 
     for (const table of tablesToTry) {
-      const { data, error } = await supabase
-        .from(table)
-        .select('*')
-        .eq('workspace_id', workspaceId)
-        .order('created_at', { ascending: false })
-        .limit(200);
+      // 1) testa a tabela existir (seleção simples)
+      // Se nem existir, PostgREST costuma dar PGRST205
+      for (const col of workspaceColsToTry) {
+        const { data, error } = await supabase
+          .from(table)
+          .select('*')
+          .eq(col as any, workspaceId)
+          .order('created_at', { ascending: false })
+          .limit(200);
 
-      if (!error) {
-        return res.status(200).json({
-          ok: true,
+        if (!error) {
+          return res.status(200).json({
+            ok: true,
+            debugId,
+            table,
+            workspaceColumn: col,
+            instances: data ?? [],
+          });
+        }
+
+        lastErr = error;
+
+        // tabela não existe -> tenta próxima tabela
+        if (isMissingTableError(error)) break;
+
+        // coluna errada -> tenta próxima coluna
+        if (isMissingColumnError(error)) continue;
+
+        // erro real (permissão, RLS, etc)
+        return res.status(500).json({
+          ok: false,
           debugId,
+          error: 'instances_query_failed',
           table,
-          workspaceColumn: 'workspace_id',
-          instances: data ?? [],
+          details: error,
         });
       }
 
-      lastErr = error;
-
-      // se a tabela não existe, tenta a próxima
-      const msg = String(error?.message || '');
-      if (
-        msg.toLowerCase().includes('does not exist') ||
-        msg.toLowerCase().includes('relation') ||
-        msg.toLowerCase().includes('not found')
-      ) {
-        continue;
-      }
-
-      // erro real (permissão, coluna errada, etc)
-      return res.status(500).json({
-        ok: false,
-        debugId,
-        error: 'instances_query_failed',
-        table,
-        details: error,
-      });
+      // se saiu do loop de colunas por "missing table", continua para próxima tabela
+      if (lastErr && isMissingTableError(lastErr)) continue;
     }
 
     // nenhuma tabela encontrada
