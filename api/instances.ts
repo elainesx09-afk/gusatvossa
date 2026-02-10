@@ -17,36 +17,6 @@ function pickString(v: unknown): string | null {
   return null;
 }
 
-function isMissingTableError(err: any): boolean {
-  const code = String(err?.code || '');
-  const msg = String(err?.message || '').toLowerCase();
-
-  // PostgREST: table not found in schema cache
-  if (code === 'PGRST205') return true;
-
-  // Common message patterns
-  if (msg.includes("could not find the table")) return true;
-  if (msg.includes("schema cache")) return true;
-  if (msg.includes("does not exist")) return true;
-  if (msg.includes("relation")) return true;
-  if (msg.includes("not found")) return true;
-
-  return false;
-}
-
-function isMissingColumnError(err: any): boolean {
-  const code = String(err?.code || '');
-  const msg = String(err?.message || '').toLowerCase();
-
-  // PostgREST sometimes uses these for bad requests / missing columns
-  if (code === 'PGRST204') return true;
-
-  if (msg.includes('column')) return true;
-  if (msg.includes('does not exist')) return true;
-
-  return false;
-}
-
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   setCors(res);
 
@@ -56,6 +26,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const debugId = `instances_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 
   try {
+    // ✅ MARCA: se você não ver isso na resposta, você NÃO está rodando esse código
+    const marker = 'INSTANCES_V3_WA_INSTANCE_FIRST';
+
     // Auth
     const token = pickString(req.headers['x-api-token']);
     const expected =
@@ -64,10 +37,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       process.env.VITE_API_TOKEN;
 
     if (!expected) {
-      return res.status(500).json({ ok: false, debugId, error: 'server_missing_api_token_env' });
+      return res.status(500).json({ ok: false, debugId, marker, error: 'server_missing_api_token_env' });
     }
     if (!token || token !== expected) {
-      return res.status(401).json({ ok: false, debugId, error: 'unauthorized' });
+      return res.status(401).json({ ok: false, debugId, marker, error: 'unauthorized' });
     }
 
     // workspace_id: query OU header
@@ -77,7 +50,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       pickString(req.headers['x-workspace-id']);
 
     if (!workspaceId) {
-      return res.status(400).json({ ok: false, debugId, error: 'missing_workspace_id' });
+      return res.status(400).json({ ok: false, debugId, marker, error: 'missing_workspace_id' });
     }
 
     // Supabase admin
@@ -92,6 +65,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(500).json({
         ok: false,
         debugId,
+        marker,
         error: 'server_missing_supabase_env',
         needs: ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'],
       });
@@ -99,66 +73,92 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const supabase = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
 
-    // ✅ Coloca wa_instance primeiro (o seu Supabase já sugeriu isso)
-    const tablesToTry = ['wa_instance', 'whatsapp_instance', 'instances', 'instance'];
+    // ✅ Força a tabela CERTA primeiro
+    const tryTable = async (table: string) => {
+      const { data, error } = await supabase
+        .from(table)
+        .select('*')
+        .eq('workspace_id', workspaceId)
+        .order('created_at', { ascending: false })
+        .limit(200);
 
-    // tenta workspace columns possíveis (pra não quebrar se o schema variar)
-    const workspaceColsToTry = ['workspace_id', 'workspaceId', 'workspace'];
+      return { data, error };
+    };
 
-    let lastErr: any = null;
-
-    for (const table of tablesToTry) {
-      // 1) testa a tabela existir (seleção simples)
-      // Se nem existir, PostgREST costuma dar PGRST205
-      for (const col of workspaceColsToTry) {
-        const { data, error } = await supabase
-          .from(table)
-          .select('*')
-          .eq(col as any, workspaceId)
-          .order('created_at', { ascending: false })
-          .limit(200);
-
-        if (!error) {
-          return res.status(200).json({
-            ok: true,
-            debugId,
-            table,
-            workspaceColumn: col,
-            instances: data ?? [],
-          });
-        }
-
-        lastErr = error;
-
-        // tabela não existe -> tenta próxima tabela
-        if (isMissingTableError(error)) break;
-
-        // coluna errada -> tenta próxima coluna
-        if (isMissingColumnError(error)) continue;
-
-        // erro real (permissão, RLS, etc)
-        return res.status(500).json({
-          ok: false,
-          debugId,
-          error: 'instances_query_failed',
-          table,
-          details: error,
-        });
-      }
-
-      // se saiu do loop de colunas por "missing table", continua para próxima tabela
-      if (lastErr && isMissingTableError(lastErr)) continue;
+    // 1) wa_instance (o Supabase literalmente sugeriu isso)
+    const r1 = await tryTable('wa_instance');
+    if (!r1.error) {
+      return res.status(200).json({
+        ok: true,
+        debugId,
+        marker,
+        table: 'wa_instance',
+        workspaceColumn: 'workspace_id',
+        instances: r1.data ?? [],
+      });
     }
 
-    // nenhuma tabela encontrada
+    // Se não achou tabela, tenta fallback
+    const code1 = String((r1.error as any)?.code || '');
+    const msg1 = String((r1.error as any)?.message || '').toLowerCase();
+
+    const waMissing =
+      code1 === 'PGRST205' ||
+      msg1.includes('could not find the table') ||
+      msg1.includes('schema cache');
+
+    if (!waMissing) {
+      // erro real (permissão/coluna/rls/etc)
+      return res.status(500).json({
+        ok: false,
+        debugId,
+        marker,
+        error: 'instances_query_failed',
+        table: 'wa_instance',
+        details: r1.error,
+      });
+    }
+
+    // 2) fallback: instances
+    const r2 = await tryTable('instances');
+    if (!r2.error) {
+      return res.status(200).json({
+        ok: true,
+        debugId,
+        marker,
+        table: 'instances',
+        workspaceColumn: 'workspace_id',
+        instances: r2.data ?? [],
+      });
+    }
+
+    // 3) fallback: whatsapp_instance
+    const r3 = await tryTable('whatsapp_instance');
+    if (!r3.error) {
+      return res.status(200).json({
+        ok: true,
+        debugId,
+        marker,
+        table: 'whatsapp_instance',
+        workspaceColumn: 'workspace_id',
+        instances: r3.data ?? [],
+      });
+    }
+
+    // Se nada deu, não quebra o dashboard: devolve ok true com vazio e erros para debug
     return res.status(200).json({
       ok: true,
       debugId,
+      marker,
       table: null,
       workspaceColumn: 'workspace_id',
       instances: [],
-      note: 'no_instances_table_found_in_candidates',
-      lastError: lastErr ?? null,
+      note: 'no_instances_table_worked',
+      errors: [
+        { table: 'wa_instance', err: r1.error },
+        { table: 'instances', err: r2.error },
+        { table: 'whatsapp_instance', err: r3.error },
+      ],
     });
   } catch (e: any) {
     return res.status(500).json({
