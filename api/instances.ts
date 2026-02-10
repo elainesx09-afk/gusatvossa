@@ -1,76 +1,57 @@
-import type { VercelRequest, VercelResponse } from "@vercel/node";
-import crypto from "node:crypto";
+import { createClient } from "@supabase/supabase-js";
 
-type Json = Record<string, any>;
-
-function send(res: VercelResponse, status: number, body: Json) {
-  res.status(status);
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.end(JSON.stringify(body));
+function env(name: string) {
+  return String(process.env[name] || "");
 }
 
-function cors(req: VercelRequest, res: VercelResponse) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-api-token, x-workspace-id, workspace_id, workspace-id");
-  if (req.method === "OPTIONS") {
-    res.status(204).end("");
-    return true;
-  }
-  return false;
+function supabaseAdmin() {
+  const url = env("SUPABASE_URL");
+  const key = env("SUPABASE_SERVICE_ROLE_KEY");
+  if (!url || !key) throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+  return createClient(url, key, { auth: { persistSession: false } });
 }
 
-function getWorkspaceId(req: VercelRequest) {
-  return String(
-    req.query?.workspace_id ||
-      (req.headers["x-workspace-id"] as string) ||
-      (req.headers["workspace-id"] as string) ||
-      (req.headers["workspace_id"] as string) ||
-      ""
-  ).trim();
+async function assertWorkspaceAuth(req: any, workspaceId: string) {
+  const token = String(req.headers["x-api-token"] || "");
+  if (!token) throw new Error("Missing x-api-token header");
+
+  const sb = supabaseAdmin();
+  const { data, error } = await sb
+    .from("workspaces")
+    .select("id, api_token")
+    .eq("id", workspaceId)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data?.api_token) throw new Error("Workspace api_token not found");
+  if (data.api_token !== token) throw new Error("Invalid x-api-token for workspace");
 }
 
-function getApiToken(req: VercelRequest) {
-  return String(req.headers["x-api-token"] || "").trim();
-}
-
-async function getSupabaseAdmin() {
-  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-    throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in Vercel env");
-  }
-  const { createClient } = await import("@supabase/supabase-js");
-  return createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { persistSession: false },
-  });
-}
-
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const debugId = `instances_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
-
+export default async function handler(req: any, res: any) {
   try {
-    if (cors(req, res)) return;
-    if (req.method !== "GET") return send(res, 405, { ok: false, debugId, error: "METHOD_NOT_ALLOWED" });
+    if (req.method === "OPTIONS") return res.status(200).json({ ok: true });
 
-    const workspaceId = getWorkspaceId(req);
-    const apiToken = getApiToken(req);
+    if (req.method !== "GET") {
+      return res.status(405).json({ ok: false, error: "Method not allowed" });
+    }
 
-    // ✅ consistente com o resto: só exige token presente (como seus outros endpoints “funcionando”)
-    if (!workspaceId) return send(res, 200, { ok: false, debugId, error: "MISSING_WORKSPACE_ID" });
-    if (!apiToken) return send(res, 200, { ok: false, debugId, error: "MISSING_API_TOKEN" });
+    const workspaceId = String(req.query.workspace_id || req.headers["workspace_id"] || "");
+    if (!workspaceId) return res.status(400).json({ ok: false, error: "Missing workspace_id" });
 
-    const supabase = await getSupabaseAdmin();
+    await assertWorkspaceAuth(req, workspaceId);
 
-    const { data, error } = await supabase
+    const sb = supabaseAdmin();
+
+    const { data, error } = await sb
       .from("wa_instances")
-      .select("id, workspace_id, instance_name, status, mode, webhook_url, last_qr, updated_at, created_at")
+      .select("id, workspace_id, instance_name, status, mode, phone, last_qrcode, last_seen_at, created_at, updated_at")
       .eq("workspace_id", workspaceId)
       .order("updated_at", { ascending: false });
 
-    if (error) return send(res, 200, { ok: false, debugId, error: error.message });
+    if (error) throw error;
 
-    return send(res, 200, { ok: true, debugId, instances: data ?? [] });
+    return res.status(200).json({ ok: true, instances: data || [] });
   } catch (e: any) {
-    // ✅ nunca “quebra”, sempre JSON
-    return send(res, 200, { ok: false, debugId, error: String(e?.message || e) });
+    return res.status(500).json({ ok: false, error: "instances_failed", details: { message: String(e?.message || e) } });
   }
 }
