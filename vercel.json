@@ -1,20 +1,16 @@
 {
   "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": "/api/$1"
-    },
-    {
-      "source": "/brand/(.*)",
-      "destination": "/brand/$1"
-    },
+    { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/brand/(.*)", "destination": "/brand/$1" },
+    { "source": "/assets/(.*)", "destination": "/assets/$1" },
+    { "source": "/(.*)", "destination": "/" }
+  ],
+  "headers": [
     {
       "source": "/assets/(.*)",
-      "destination": "/assets/$1"
-    },
-    {
-      "source": "/(.*)",
-      "destination": "/index.html"
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
+      ]
     }
   ]
 }
