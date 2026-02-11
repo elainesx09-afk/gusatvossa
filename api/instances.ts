@@ -1,21 +1,6 @@
 // api/instances.ts
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { createClient } from '@supabase/supabase-js';
-
-function setCors(res: VercelResponse) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
-  res.setHeader(
-    'Access-Control-Allow-Headers',
-    'Content-Type, x-api-token, workspace_id, x-workspace-id'
-  );
-}
-
-function pickString(v: unknown): string | null {
-  if (typeof v === 'string' && v.trim()) return v.trim();
-  if (Array.isArray(v) && typeof v[0] === 'string' && v[0].trim()) return v[0].trim();
-  return null;
-}
+import { setCors, tenantGuard } from './_lib/tenantGuard';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   setCors(res);
@@ -23,147 +8,65 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'OPTIONS') return res.status(200).send('');
   if (req.method !== 'GET') return res.status(405).json({ ok: false, error: 'method_not_allowed' });
 
-  const debugId = `instances_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  const guard = await tenantGuard(req, res, 'instances');
+  if (!guard) return;
 
   try {
-    // ✅ MARCA: se você não ver isso na resposta, você NÃO está rodando esse código
-    const marker = 'INSTANCES_V3_WA_INSTANCE_FIRST';
+    // Prioriza wa_instance (hint do Supabase)
+    const tablesToTry = ['wa_instance', 'whatsapp_instance', 'instances', 'instance', 'wa_instances'];
 
-    // Auth
-    const token = pickString(req.headers['x-api-token']);
-    const expected =
-      process.env.API_TOKEN ||
-      process.env.ONEELEVEN_API_TOKEN ||
-      process.env.VITE_API_TOKEN;
-
-    if (!expected) {
-      return res.status(500).json({ ok: false, debugId, marker, error: 'server_missing_api_token_env' });
-    }
-    if (!token || token !== expected) {
-      return res.status(401).json({ ok: false, debugId, marker, error: 'unauthorized' });
-    }
-
-    // workspace_id: query OU header
-    const workspaceId =
-      pickString(req.query.workspace_id) ||
-      pickString(req.headers['workspace_id']) ||
-      pickString(req.headers['x-workspace-id']);
-
-    if (!workspaceId) {
-      return res.status(400).json({ ok: false, debugId, marker, error: 'missing_workspace_id' });
-    }
-
-    // Supabase admin
-    const supabaseUrl =
-      process.env.SUPABASE_URL ||
-      process.env.VITE_SUPABASE_URL ||
-      process.env.NEXT_PUBLIC_SUPABASE_URL;
-
-    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-    if (!supabaseUrl || !serviceKey) {
-      return res.status(500).json({
-        ok: false,
-        debugId,
-        marker,
-        error: 'server_missing_supabase_env',
-        needs: ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'],
-      });
-    }
-
-    const supabase = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
-
-    // ✅ Força a tabela CERTA primeiro
-    const tryTable = async (table: string) => {
-      const { data, error } = await supabase
+    for (const table of tablesToTry) {
+      const { data, error } = await guard.supabase
         .from(table)
         .select('*')
-        .eq('workspace_id', workspaceId)
+        .eq('workspace_id', guard.workspaceId)
         .order('created_at', { ascending: false })
         .limit(200);
 
-      return { data, error };
-    };
+      if (!error) {
+        return res.status(200).json({
+          ok: true,
+          debugId: guard.debugId,
+          table,
+          workspaceColumn: 'workspace_id',
+          instances: data ?? [],
+        });
+      }
 
-    // 1) wa_instance (o Supabase literalmente sugeriu isso)
-    const r1 = await tryTable('wa_instance');
-    if (!r1.error) {
-      return res.status(200).json({
-        ok: true,
-        debugId,
-        marker,
-        table: 'wa_instance',
-        workspaceColumn: 'workspace_id',
-        instances: r1.data ?? [],
-      });
-    }
+      const msg = String(error?.message || '').toLowerCase();
 
-    // Se não achou tabela, tenta fallback
-    const code1 = String((r1.error as any)?.code || '');
-    const msg1 = String((r1.error as any)?.message || '').toLowerCase();
+      // "table not found" variants (inclui schema cache)
+      const isMissingTable =
+        msg.includes('could not find the table') ||
+        msg.includes('schema cache') ||
+        msg.includes('does not exist') ||
+        msg.includes('relation') ||
+        msg.includes('not found');
 
-    const waMissing =
-      code1 === 'PGRST205' ||
-      msg1.includes('could not find the table') ||
-      msg1.includes('schema cache');
+      if (isMissingTable) continue;
 
-    if (!waMissing) {
-      // erro real (permissão/coluna/rls/etc)
+      // erro real
       return res.status(500).json({
         ok: false,
-        debugId,
-        marker,
+        debugId: guard.debugId,
         error: 'instances_query_failed',
-        table: 'wa_instance',
-        details: r1.error,
+        table,
+        details: error,
       });
     }
 
-    // 2) fallback: instances
-    const r2 = await tryTable('instances');
-    if (!r2.error) {
-      return res.status(200).json({
-        ok: true,
-        debugId,
-        marker,
-        table: 'instances',
-        workspaceColumn: 'workspace_id',
-        instances: r2.data ?? [],
-      });
-    }
-
-    // 3) fallback: whatsapp_instance
-    const r3 = await tryTable('whatsapp_instance');
-    if (!r3.error) {
-      return res.status(200).json({
-        ok: true,
-        debugId,
-        marker,
-        table: 'whatsapp_instance',
-        workspaceColumn: 'workspace_id',
-        instances: r3.data ?? [],
-      });
-    }
-
-    // Se nada deu, não quebra o dashboard: devolve ok true com vazio e erros para debug
     return res.status(200).json({
       ok: true,
-      debugId,
-      marker,
+      debugId: guard.debugId,
       table: null,
       workspaceColumn: 'workspace_id',
       instances: [],
-      note: 'no_instances_table_worked',
-      errors: [
-        { table: 'wa_instance', err: r1.error },
-        { table: 'instances', err: r2.error },
-        { table: 'whatsapp_instance', err: r3.error },
-      ],
+      note: 'no_instances_table_found_in_candidates',
     });
   } catch (e: any) {
     return res.status(500).json({
       ok: false,
-      debugId,
+      debugId: guard.debugId,
       error: 'unhandled_exception',
       details: String(e?.message || e),
     });
