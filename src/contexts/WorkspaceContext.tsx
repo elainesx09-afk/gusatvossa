@@ -1,96 +1,40 @@
-import React, { createContext, useContext, useEffect, useMemo, useState, ReactNode } from "react";
-import { useAuth } from "@/contexts/AuthContext";
+// src/contexts/WorkspaceContext.tsx
+import React, { createContext, useContext, useMemo, useState, ReactNode } from "react";
 
-type Workspace = { id: string; name: string };
+type Workspace = {
+  id: string;
+  name: string;
+};
 
 interface WorkspaceContextType {
-  loading: boolean;
   currentWorkspace: Workspace;
   setCurrentWorkspace: (workspace: Workspace) => void;
   workspaces: Workspace[];
-  refresh: () => Promise<void>;
 }
 
 const WorkspaceContext = createContext<WorkspaceContextType | undefined>(undefined);
 
-const LS_KEY = "oneeleven_workspace_id";
+const ENV_WORKSPACE_ID = (import.meta.env.VITE_WORKSPACE_ID as string | undefined) ?? "";
 
-function safePickInitial(): Workspace {
-  const saved = localStorage.getItem(LS_KEY) || "";
-  return { id: saved, name: "Workspace" };
+function safeId(v: string) {
+  const s = (v || "").trim();
+  // Nunca deixa vazio (isso quebra fetch e páginas)
+  return s.length > 0 ? s : "demo-workspace";
 }
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
-  const { user, loading: authLoading } = useAuth();
+  const workspaces = useMemo<Workspace[]>(() => {
+    const id = safeId(ENV_WORKSPACE_ID);
+    return [{ id, name: "DEMO" }];
+  }, []);
 
-  const [loading, setLoading] = useState(true);
-  const [workspaces, setWorkspaces] = useState<Workspace[]>(() => {
-    const initial = safePickInitial();
-    return initial.id ? [initial] : [];
-  });
+  const [currentWorkspace, setCurrentWorkspace] = useState<Workspace>(workspaces[0]);
 
-  const [currentWorkspace, setCurrentWorkspaceState] = useState<Workspace>(() => {
-    const initial = safePickInitial();
-    return initial;
-  });
-
-  const setCurrentWorkspace = (ws: Workspace) => {
-    setCurrentWorkspaceState(ws);
-    localStorage.setItem(LS_KEY, ws.id);
-  };
-
-  const refresh = async () => {
-    if (!user) {
-      setWorkspaces([]);
-      setCurrentWorkspaceState(safePickInitial());
-      setLoading(false);
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const r = await fetch("/api/workspaces", { method: "GET" });
-      const j = await r.json();
-
-      if (!j?.ok) {
-        // fallback: não quebra a UI
-        setLoading(false);
-        return;
-      }
-
-      const list: Workspace[] = (j.workspaces ?? []).map((w: any) => ({
-        id: String(w.id),
-        name: String(w.name ?? "Workspace"),
-      }));
-
-      setWorkspaces(list);
-
-      const savedId = localStorage.getItem(LS_KEY);
-      const pick = list.find((w) => w.id === savedId) || list[0];
-
-      if (pick) setCurrentWorkspace(pick);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (authLoading) return;
-    refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading, user?.id]);
-
-  const value = useMemo<WorkspaceContextType>(() => {
-    return {
-      loading,
-      currentWorkspace,
-      setCurrentWorkspace,
-      workspaces,
-      refresh,
-    };
-  }, [loading, currentWorkspace, workspaces]);
-
-  return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
+  return (
+    <WorkspaceContext.Provider value={{ currentWorkspace, setCurrentWorkspace, workspaces }}>
+      {children}
+    </WorkspaceContext.Provider>
+  );
 }
 
 export function useWorkspace() {
