@@ -1,102 +1,111 @@
-// api/workspaces.ts
-export const config = { runtime: "nodejs" };
+import type { VercelRequest, VercelResponse } from "@vercel/node";
+import { createClient } from "@supabase/supabase-js";
 
-function jid(prefix: string) {
-  return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+function setCors(res: VercelResponse) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, x-api-token, workspace_id, x-workspace-id"
+  );
 }
 
-async function readJson(req: Request) {
-  try {
-    return await req.json();
-  } catch {
-    return null;
-  }
+function pickString(v: unknown): string | null {
+  if (typeof v === "string" && v.trim()) return v.trim();
+  if (Array.isArray(v) && typeof v[0] === "string" && v[0].trim()) return v[0].trim();
+  return null;
 }
 
-function json(body: any, status = 200, extraHeaders: Record<string, string> = {}) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "no-store",
-      ...extraHeaders,
-    },
-  });
+function bearerToken(req: VercelRequest) {
+  const raw = pickString(req.headers["authorization"]);
+  if (!raw) return null;
+  const m = raw.match(/^Bearer\s+(.+)$/i);
+  return m ? m[1] : null;
 }
 
-function getToken(req: Request) {
-  return req.headers.get("x-api-token") || "";
-}
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  setCors(res);
+  if (req.method === "OPTIONS") return res.status(200).send("");
+  if (req.method !== "GET") return res.status(405).json({ ok: false, error: "method_not_allowed" });
 
-export default async function handler(req: Request) {
-  const debugId = jid("workspaces");
-  const method = req.method || "GET";
-
-  // CORS básico
-  if (method === "OPTIONS") {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "content-type, x-api-token",
-        "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-        "Access-Control-Max-Age": "86400",
-      },
-    });
-  }
-
-  const token = getToken(req);
-  const apiToken = process.env.API_TOKEN || "";
-
-  if (!apiToken || token !== apiToken) {
-    return json({ ok: false, debugId, error: "unauthorized" }, 401);
-  }
-
-  const url = new URL(req.url);
-  const workspaceId = url.searchParams.get("workspace_id") || "";
-
-  // Supabase Admin (helper já existe no seu projeto)
-  let supabase: any;
-  try {
-    const mod = await import("./_lib/supabaseAdmin.js");
-    supabase = mod?.supabaseAdmin || mod?.default || mod?.supabase || null;
-  } catch (e: any) {
-    return json({ ok: false, debugId, error: "supabase_admin_import_failed", details: String(e?.message || e) }, 500);
-  }
-
-  if (!supabase) {
-    return json({ ok: false, debugId, error: "supabase_admin_missing" }, 500);
-  }
+  const debugId = `workspaces_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 
   try {
-    if (method === "GET") {
-      let q = supabase.from("workspaces").select("*").order("created_at", { ascending: false });
-      if (workspaceId) q = q.eq("id", workspaceId);
+    const token = pickString(req.headers["x-api-token"]);
+    const expected = process.env.API_TOKEN || process.env.ONEELEVEN_API_TOKEN || process.env.VITE_API_TOKEN;
 
-      const { data, error } = await q;
-      if (error) return json({ ok: false, debugId, error: error.message }, 400);
+    if (!expected) return res.status(500).json({ ok: false, debugId, error: "server_missing_api_token_env" });
+    if (!token || token !== expected) return res.status(401).json({ ok: false, debugId, error: "unauthorized" });
 
-      return json({ ok: true, debugId, workspaces: data || [] });
+    const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    if (!supabaseUrl || !serviceKey) {
+      return res.status(500).json({
+        ok: false,
+        debugId,
+        error: "server_missing_supabase_env",
+        needs: ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"],
+      });
     }
 
-    if (method === "POST") {
-      const body = await readJson(req);
-      const name = String(body?.name || "").trim();
-      const niche = String(body?.niche || "").trim();
-      const timezone = String(body?.timezone || "America/Sao_Paulo").trim();
+    const supabase = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
 
-      if (!name) return json({ ok: false, debugId, error: "missing_name" }, 400);
+    const jwt = bearerToken(req);
+    if (!jwt) return res.status(401).json({ ok: false, debugId, error: "missing_bearer_token" });
 
-      const payload: any = { name, niche: niche || null, timezone };
+    const { data: userData, error: userErr } = await supabase.auth.getUser(jwt);
+    if (userErr || !userData?.user) return res.status(401).json({ ok: false, debugId, error: "invalid_token" });
 
-      const { data, error } = await supabase.from("workspaces").insert(payload).select("*").single();
-      if (error) return json({ ok: false, debugId, error: error.message }, 400);
+    const userId = userData.user.id;
 
-      return json({ ok: true, debugId, workspace: data });
+    // pega memberships
+    const { data: memberships, error: memErr } = await supabase
+      .from("workspace_member")
+      .select("workspace_id, role")
+      .eq("user_id", userId);
+
+    if (memErr) {
+      return res.status(500).json({ ok: false, debugId, error: "membership_query_failed", details: memErr });
     }
 
-    return json({ ok: false, debugId, error: "method_not_allowed" }, 405);
+    let workspaceIds = (memberships ?? []).map((m: any) => String(m.workspace_id));
+
+    // se não tiver nenhum, cria 1
+    if (workspaceIds.length === 0) {
+      const { data: ws, error: wsErr } = await supabase
+        .from("workspace")
+        .insert({ name: "Meu Workspace", created_by: userId })
+        .select("*")
+        .single();
+
+      if (wsErr || !ws?.id) {
+        return res.status(500).json({ ok: false, debugId, error: "workspace_autocreate_failed", details: wsErr });
+      }
+
+      const { error: linkErr } = await supabase
+        .from("workspace_member")
+        .insert({ workspace_id: ws.id, user_id: userId, role: "owner" });
+
+      if (linkErr) {
+        return res.status(500).json({ ok: false, debugId, error: "workspace_member_link_failed", details: linkErr });
+      }
+
+      workspaceIds = [String(ws.id)];
+    }
+
+    const { data: workspaces, error: wsListErr } = await supabase
+      .from("workspace")
+      .select("id,name,created_at")
+      .in("id", workspaceIds)
+      .order("created_at", { ascending: false });
+
+    if (wsListErr) {
+      return res.status(500).json({ ok: false, debugId, error: "workspace_list_failed", details: wsListErr });
+    }
+
+    return res.status(200).json({ ok: true, debugId, workspaces: workspaces ?? [] });
   } catch (e: any) {
-    return json({ ok: false, debugId, error: "workspaces_failed", details: String(e?.message || e) }, 500);
+    return res.status(500).json({ ok: false, debugId, error: "unhandled_exception", details: String(e?.message || e) });
   }
 }
