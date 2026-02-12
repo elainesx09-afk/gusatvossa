@@ -1,4 +1,3 @@
-// src/contexts/WorkspaceContext.tsx
 import React, { createContext, useContext, useMemo, useState, ReactNode } from "react";
 
 type Workspace = {
@@ -14,17 +13,12 @@ interface WorkspaceContextType {
 
 const WorkspaceContext = createContext<WorkspaceContextType | undefined>(undefined);
 
-const ENV_WORKSPACE_ID = (import.meta.env.VITE_WORKSPACE_ID as string | undefined) ?? "";
-
-function safeId(v: string) {
-  const s = (v || "").trim();
-  // Nunca deixa vazio (isso quebra fetch e páginas)
-  return s.length > 0 ? s : "demo-workspace";
-}
+const WORKSPACE_ID = import.meta.env.VITE_WORKSPACE_ID as string | undefined;
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const workspaces = useMemo<Workspace[]>(() => {
-    const id = safeId(ENV_WORKSPACE_ID);
+    // MVP: 1 workspace fixo “DEMO”
+    const id = WORKSPACE_ID || "";
     return [{ id, name: "DEMO" }];
   }, []);
 

@@ -1,8 +1,7 @@
-// src/pages/Overview.tsx
-import React from 'react';
 import {
   MessageSquare,
   Users,
+  Smartphone,
   Trophy,
   Clock,
   TrendingUp,
@@ -25,37 +24,27 @@ import {
   getLeadsByWorkspace,
 } from '@/data/demoData';
 import { cn } from '@/lib/utils';
-import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  BarChart,
-  Bar,
-} from 'recharts';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
 
 // Micro sparkline component
 function Sparkline({ data, color = 'primary' }: { data: number[]; color?: string }) {
   const max = Math.max(...data);
   const min = Math.min(...data);
   const range = max - min || 1;
-
+  
   return (
     <div className="flex items-end gap-0.5 h-8">
       {data.map((value, i) => (
         <div
           key={i}
           className={cn(
-            'w-1 rounded-full transition-all duration-300',
+            "w-1 rounded-full transition-all duration-300",
             color === 'primary' ? 'bg-primary/60' : 'bg-warning/60'
           )}
-          style={{
+          style={{ 
             height: `${((value - min) / range) * 100}%`,
             minHeight: '4px',
-            animationDelay: `${i * 50}ms`,
+            animationDelay: `${i * 50}ms`
           }}
         />
       ))}
@@ -64,27 +53,25 @@ function Sparkline({ data, color = 'primary' }: { data: number[]; color?: string
 }
 
 // Activity item component
-function ActivityItem({
-  icon: Icon,
-  title,
-  time,
-  type,
-}: {
-  icon: React.ElementType;
-  title: string;
-  time: string;
-  type: 'success' | 'info' | 'warning';
+function ActivityItem({ 
+  icon: Icon, 
+  title, 
+  time, 
+  type 
+}: { 
+  icon: React.ElementType; 
+  title: string; 
+  time: string; 
+  type: 'success' | 'info' | 'warning' 
 }) {
   return (
     <div className="flex items-center gap-3 p-2 rounded-lg hover:bg-secondary/30 transition-all duration-200 group cursor-pointer">
-      <div
-        className={cn(
-          'w-8 h-8 rounded-full flex items-center justify-center transition-transform duration-200 group-hover:scale-110',
-          type === 'success' && 'bg-success/10 text-success',
-          type === 'info' && 'bg-primary/10 text-primary',
-          type === 'warning' && 'bg-warning/10 text-warning'
-        )}
-      >
+      <div className={cn(
+        "w-8 h-8 rounded-full flex items-center justify-center transition-transform duration-200 group-hover:scale-110",
+        type === 'success' && 'bg-success/10 text-success',
+        type === 'info' && 'bg-primary/10 text-primary',
+        type === 'warning' && 'bg-warning/10 text-warning'
+      )}>
         <Icon className="w-4 h-4" />
       </div>
       <div className="flex-1 min-w-0">
@@ -96,16 +83,16 @@ function ActivityItem({
 }
 
 // Quick stat card
-function QuickStat({
-  label,
-  value,
-  trend,
-  trendUp,
-}: {
-  label: string;
-  value: string | number;
-  trend: string;
-  trendUp: boolean;
+function QuickStat({ 
+  label, 
+  value, 
+  trend, 
+  trendUp 
+}: { 
+  label: string; 
+  value: string | number; 
+  trend: string; 
+  trendUp: boolean 
 }) {
   return (
     <div className="p-3 rounded-lg bg-secondary/30 hover:bg-secondary/50 transition-all duration-200 cursor-pointer group">
@@ -114,9 +101,10 @@ function QuickStat({
         <span className="text-lg font-bold text-foreground group-hover:text-primary transition-colors">
           {value}
         </span>
-        <span
-          className={cn('flex items-center text-xs font-medium', trendUp ? 'text-success' : 'text-destructive')}
-        >
+        <span className={cn(
+          "flex items-center text-xs font-medium",
+          trendUp ? "text-success" : "text-destructive"
+        )}>
           {trendUp ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
           {trend}
         </span>
@@ -130,18 +118,16 @@ export default function Overview() {
   const conversations = getConversationsByWorkspace(currentWorkspace.id);
   const instances = getInstancesByWorkspace(currentWorkspace.id);
   const leads = getLeadsByWorkspace(currentWorkspace.id);
-
-  const connectedInstances = instances.filter((i) => i.status === 'connected').length;
-
+  
+  const connectedInstances = instances.filter(i => i.status === 'connected').length;
+  const hasDisconnectedInstances = instances.some(i => i.status === 'disconnected');
+  
   // Calculate more useful metrics
-  const qualifiedLeads = leads.filter((l) => l.stage === 'qualificando' || l.stage === 'proposta').length;
-  const hotLeads = leads.filter((l) => l.score >= 80).length;
-  const needsFollowUp = leads.filter((l) => l.needsFollowUp).length;
-  const conversionRate =
-    leads.length > 0
-      ? ((leads.filter((l) => l.stage === 'ganhou').length / leads.length) * 100).toFixed(1)
-      : '0';
-
+  const qualifiedLeads = leads.filter(l => l.stage === 'qualificando' || l.stage === 'proposta').length;
+  const hotLeads = leads.filter(l => l.score >= 80).length;
+  const needsFollowUp = leads.filter(l => l.needsFollowUp).length;
+  const conversionRate = leads.length > 0 ? ((leads.filter(l => l.stage === 'ganhou').length / leads.length) * 100).toFixed(1) : '0';
+  
   // Sparkline data (mock)
   const messageSparkline = [12, 19, 15, 25, 22, 30, 28, 35, 32, 40, 38, 45];
   const leadsSparkline = [5, 8, 6, 10, 12, 9, 15, 14, 18, 16, 20, 22];
@@ -162,19 +148,25 @@ export default function Overview() {
       {/* Page Header */}
       <div className="animate-fade-in">
         <h1 className="text-3xl font-bold font-display tracking-tight text-foreground">Overview</h1>
-        <p className="text-muted-foreground mt-1">Bem-vindo ao painel de {currentWorkspace.name}</p>
+        <p className="text-muted-foreground mt-1">
+          Bem-vindo ao painel de {currentWorkspace.name}
+        </p>
       </div>
 
-      {/* KPIs Grid */}
+      {/* KPIs Grid - with staggered animation */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
         {[
-          { title: 'Total Messages', value: kpiData.totalMessages, icon: MessageSquare, change: '+12% vs last week', changeType: 'positive' as const, delay: 0 },
-          { title: 'Leads Quentes', value: hotLeads, icon: Zap, change: `${hotLeads > 3 ? '+' + (hotLeads - 3) : '0'} hoje`, changeType: 'positive' as const, delay: 50, iconClassName: 'bg-warning/10 group-hover:bg-warning/20' },
-          { title: 'Taxa de Conversão', value: `${conversionRate}%`, icon: Target, change: '+2.3% vs mês anterior', changeType: 'positive' as const, delay: 100 },
-          { title: 'Follow-up Conversions', value: kpiData.followUpConversions, icon: Trophy, change: '+23% this month', changeType: 'positive' as const, delay: 150, iconClassName: 'bg-success/10 group-hover:bg-success/20' },
-          { title: 'ROI Estimado', value: 'R$ 12.4k', icon: TrendingUp, change: '3.2x retorno', changeType: 'positive' as const, delay: 200 },
-        ].map((kpi) => (
-          <div key={kpi.title} className="animate-fade-in" style={{ animationDelay: `${kpi.delay}ms` }}>
+          { title: "Total Messages", value: kpiData.totalMessages, icon: MessageSquare, change: "+12% vs last week", changeType: "positive" as const, delay: 0 },
+          { title: "Leads Quentes", value: hotLeads, icon: Zap, change: `${hotLeads > 3 ? '+' + (hotLeads - 3) : '0'} hoje`, changeType: "positive" as const, delay: 50, iconClassName: "bg-warning/10 group-hover:bg-warning/20" },
+          { title: "Taxa de Conversão", value: `${conversionRate}%`, icon: Target, change: "+2.3% vs mês anterior", changeType: "positive" as const, delay: 100 },
+          { title: "Follow-up Conversions", value: kpiData.followUpConversions, icon: Trophy, change: "+23% this month", changeType: "positive" as const, delay: 150, iconClassName: "bg-success/10 group-hover:bg-success/20" },
+          { title: "ROI Estimado", value: "R$ 12.4k", icon: TrendingUp, change: "3.2x retorno", changeType: "positive" as const, delay: 200 },
+        ].map((kpi, index) => (
+          <div 
+            key={kpi.title}
+            className="animate-fade-in"
+            style={{ animationDelay: `${kpi.delay}ms` }}
+          >
             <KPICard {...kpi} />
           </div>
         ))}
@@ -235,8 +227,24 @@ export default function Overview() {
                     }}
                     labelStyle={{ color: 'hsl(var(--foreground))' }}
                   />
-                  <Area type="monotone" dataKey="leads" stroke="hsl(var(--primary))" fill="url(#leadsGradient)" strokeWidth={2} name="Leads" animationDuration={1000} />
-                  <Area type="monotone" dataKey="conversions" stroke="hsl(var(--warning))" fill="url(#conversionsGradient)" strokeWidth={2} name="Conversions" animationDuration={1200} />
+                  <Area
+                    type="monotone"
+                    dataKey="leads"
+                    stroke="hsl(var(--primary))"
+                    fill="url(#leadsGradient)"
+                    strokeWidth={2}
+                    name="Leads"
+                    animationDuration={1000}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="conversions"
+                    stroke="hsl(var(--warning))"
+                    fill="url(#conversionsGradient)"
+                    strokeWidth={2}
+                    name="Conversions"
+                    animationDuration={1200}
+                  />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
@@ -256,14 +264,14 @@ export default function Overview() {
             <MagicFormulaItem label="Funil configurado" status="complete" />
             <MagicFormulaItem label="Follow-ups ativos" status="complete" />
             <MagicFormulaItem label="Conversões rastreadas" status="complete" />
-
+            
             <div className="pt-4 mt-4 border-t border-border">
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground">Status Geral</span>
                 <span className="text-primary font-semibold animate-pulse">Operacional</span>
               </div>
               <div className="mt-3 h-2 bg-secondary rounded-full overflow-hidden">
-                <div
+                <div 
                   className="h-full bg-gradient-premium rounded-full transition-all duration-1000 ease-out"
                   style={{ width: connectedInstances > 0 ? '100%' : '75%' }}
                 />
@@ -273,7 +281,7 @@ export default function Overview() {
         </Card>
       </div>
 
-      {/* Second Row */}
+      {/* Second Row - Activity and Insights */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Hourly Activity */}
         <Card className="bg-card border-border animate-fade-in" style={{ animationDelay: '400ms' }}>
@@ -296,7 +304,12 @@ export default function Overview() {
                     }}
                     labelStyle={{ color: 'hsl(var(--foreground))' }}
                   />
-                  <Bar dataKey="messages" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} animationDuration={800} />
+                  <Bar 
+                    dataKey="messages" 
+                    fill="hsl(var(--primary))" 
+                    radius={[4, 4, 0, 0]}
+                    animationDuration={800}
+                  />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -327,7 +340,7 @@ export default function Overview() {
           </CardContent>
         </Card>
 
-        {/* Performance */}
+        {/* Performance Insights */}
         <Card className="bg-card border-border animate-fade-in" style={{ animationDelay: '500ms' }}>
           <CardHeader className="pb-2">
             <CardTitle className="text-lg font-semibold flex items-center gap-2">
@@ -346,7 +359,7 @@ export default function Overview() {
                 <Sparkline data={leadsSparkline} color="warning" />
               </div>
             </div>
-
+            
             <div className="space-y-3 pt-3 border-t border-border">
               <div className="flex items-center justify-between">
                 <span className="text-sm text-muted-foreground">Meta do mês</span>
@@ -381,14 +394,12 @@ export default function Overview() {
               >
                 <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center group-hover:bg-primary/20 transition-colors">
                   <span className="text-sm font-semibold text-primary">
-                    {conv.leadName.split(' ').map((n: string) => n[0]).join('')}
+                    {conv.leadName.split(' ').map(n => n[0]).join('')}
                   </span>
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="font-medium text-foreground group-hover:text-primary transition-colors">
-                      {conv.leadName}
-                    </span>
+                    <span className="font-medium text-foreground group-hover:text-primary transition-colors">{conv.leadName}</span>
                     {conv.unread > 0 && (
                       <span className="px-1.5 py-0.5 text-[10px] font-bold bg-primary text-primary-foreground rounded-full animate-pulse">
                         {conv.unread}
@@ -397,7 +408,9 @@ export default function Overview() {
                   </div>
                   <p className="text-sm text-muted-foreground truncate">{conv.lastMessage}</p>
                 </div>
-                <div className="text-xs text-muted-foreground whitespace-nowrap">{conv.lastMessageAt}</div>
+                <div className="text-xs text-muted-foreground whitespace-nowrap">
+                  {conv.lastMessageAt}
+                </div>
                 <ArrowUpRight className="w-4 h-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
               </div>
             ))}

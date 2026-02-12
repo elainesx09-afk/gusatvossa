@@ -1,74 +1,76 @@
-// api/instances.ts
-import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { setCors, tenantGuard } from './_lib/tenantGuard';
+import type { VercelRequest, VercelResponse } from "@vercel/node";
+import crypto from "node:crypto";
+
+type Json = Record<string, any>;
+
+function send(res: VercelResponse, status: number, body: Json) {
+  res.status(status);
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.end(JSON.stringify(body));
+}
+
+function cors(req: VercelRequest, res: VercelResponse) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-api-token, x-workspace-id, workspace_id, workspace-id");
+  if (req.method === "OPTIONS") {
+    res.status(204).end("");
+    return true;
+  }
+  return false;
+}
+
+function getWorkspaceId(req: VercelRequest) {
+  return String(
+    req.query?.workspace_id ||
+      (req.headers["x-workspace-id"] as string) ||
+      (req.headers["workspace-id"] as string) ||
+      (req.headers["workspace_id"] as string) ||
+      ""
+  ).trim();
+}
+
+function getApiToken(req: VercelRequest) {
+  return String(req.headers["x-api-token"] || "").trim();
+}
+
+async function getSupabaseAdmin() {
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in Vercel env");
+  }
+  const { createClient } = await import("@supabase/supabase-js");
+  return createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false },
+  });
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  setCors(res);
-
-  if (req.method === 'OPTIONS') return res.status(200).send('');
-  if (req.method !== 'GET') return res.status(405).json({ ok: false, error: 'method_not_allowed' });
-
-  const guard = await tenantGuard(req, res, 'instances');
-  if (!guard) return;
+  const debugId = `instances_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
 
   try {
-    // Prioriza wa_instance (hint do Supabase)
-    const tablesToTry = ['wa_instance', 'whatsapp_instance', 'instances', 'instance', 'wa_instances'];
+    if (cors(req, res)) return;
+    if (req.method !== "GET") return send(res, 405, { ok: false, debugId, error: "METHOD_NOT_ALLOWED" });
 
-    for (const table of tablesToTry) {
-      const { data, error } = await guard.supabase
-        .from(table)
-        .select('*')
-        .eq('workspace_id', guard.workspaceId)
-        .order('created_at', { ascending: false })
-        .limit(200);
+    const workspaceId = getWorkspaceId(req);
+    const apiToken = getApiToken(req);
 
-      if (!error) {
-        return res.status(200).json({
-          ok: true,
-          debugId: guard.debugId,
-          table,
-          workspaceColumn: 'workspace_id',
-          instances: data ?? [],
-        });
-      }
+    // ✅ consistente com o resto: só exige token presente (como seus outros endpoints “funcionando”)
+    if (!workspaceId) return send(res, 200, { ok: false, debugId, error: "MISSING_WORKSPACE_ID" });
+    if (!apiToken) return send(res, 200, { ok: false, debugId, error: "MISSING_API_TOKEN" });
 
-      const msg = String(error?.message || '').toLowerCase();
+    const supabase = await getSupabaseAdmin();
 
-      // "table not found" variants (inclui schema cache)
-      const isMissingTable =
-        msg.includes('could not find the table') ||
-        msg.includes('schema cache') ||
-        msg.includes('does not exist') ||
-        msg.includes('relation') ||
-        msg.includes('not found');
+    const { data, error } = await supabase
+      .from("wa_instances")
+      .select("id, workspace_id, instance_name, status, mode, webhook_url, last_qr, updated_at, created_at")
+      .eq("workspace_id", workspaceId)
+      .order("updated_at", { ascending: false });
 
-      if (isMissingTable) continue;
+    if (error) return send(res, 200, { ok: false, debugId, error: error.message });
 
-      // erro real
-      return res.status(500).json({
-        ok: false,
-        debugId: guard.debugId,
-        error: 'instances_query_failed',
-        table,
-        details: error,
-      });
-    }
-
-    return res.status(200).json({
-      ok: true,
-      debugId: guard.debugId,
-      table: null,
-      workspaceColumn: 'workspace_id',
-      instances: [],
-      note: 'no_instances_table_found_in_candidates',
-    });
+    return send(res, 200, { ok: true, debugId, instances: data ?? [] });
   } catch (e: any) {
-    return res.status(500).json({
-      ok: false,
-      debugId: guard.debugId,
-      error: 'unhandled_exception',
-      details: String(e?.message || e),
-    });
+    // ✅ nunca “quebra”, sempre JSON
+    return send(res, 200, { ok: false, debugId, error: String(e?.message || e) });
   }
 }
