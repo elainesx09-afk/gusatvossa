@@ -1,18 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import {
-  Bot as BotIcon,
-  Sparkles,
-  Copy,
-  Check,
-  MessageSquare,
-  Target,
-  Smile,
-  Package,
-  Shield,
-  Wrench,
-  TrendingUp,
-} from 'lucide-react';
-import { useQuery } from '@tanstack/react-query';
+import { useState } from 'react';
+import { Bot as BotIcon, Sparkles, Copy, Check, Settings, MessageSquare, Target, Smile, Package, HelpCircle, FileText, Shield, Wrench, TrendingUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -23,159 +10,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useWorkspace } from '@/contexts/WorkspaceContext';
-
-type BotTone = 'formal' | 'profissional' | 'comercial' | 'consultivo';
-type BotEmojis = 'nao' | 'moderado' | 'livre';
-
-type BotConfig = {
-  companyName: string;
-  agentName: string;
-  presentation: string;
-  mission: string;
-  scope: string[];
-  tone: BotTone;
-  emojis: BotEmojis;
-  products: { name: string; price: string; description: string }[];
-  qualificationQuestions: string[];
-  closingData: string[];
-  criticalRules: string[];
-  tools: { name: string; description: string; enabled: boolean }[];
-};
-
-type ApiLead = {
-  id: string;
-  workspace_id: string;
-  phone: string | null;
-  name: string | null;
-  stage: string | null;
-  last_message_preview?: string | null;
-  last_message_at?: string | null;
-  created_at?: string | null;
-  updated_at?: string | null;
-};
-
-function API_BASE() {
-  return (import.meta as any).env?.VITE_API_BASE_URL || '';
-}
-function API_TOKEN() {
-  return (import.meta as any).env?.VITE_API_TOKEN || '';
-}
-function WORKSPACE_ID() {
-  return (import.meta as any).env?.VITE_WORKSPACE_ID || '';
-}
-
-function apiHeaders() {
-  const h: Record<string, string> = {};
-  const t = API_TOKEN();
-  const w = WORKSPACE_ID();
-  if (t) h['x-api-token'] = t;
-  if (w) h['workspace_id'] = w; // alguns handlers aceitam por header também
-  return h;
-}
-
-async function apiGet<T>(path: string): Promise<T> {
-  const base = API_BASE();
-  const url = `${base}${path}`;
-  const res = await fetch(url, { headers: apiHeaders() });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok || json?.ok === false) {
-    throw new Error(json?.error || `request_failed:${path}`);
-  }
-  return json as T;
-}
-
-function isConversionStage(stageRaw: string | null | undefined) {
-  const s = (stageRaw || '').toLowerCase().trim();
-  // aceita variações que você já usou no funil
-  return ['ganhou', 'fechado', 'convertido', 'won', 'closed_won'].includes(s);
-}
-
-function defaultBotConfig(companyName: string): BotConfig {
-  return {
-    companyName: companyName || 'ONE ELEVEN',
-    agentName: 'Sofia',
-    presentation: 'Central de Vendas',
-    mission:
-      'Atender clientes, qualificar leads e direcionar para fechamento. Sempre responder humano, objetivo e com urgência elegante.',
-    scope: ['qualificar', 'apresentar_precos', 'negociar', 'transferir'],
-    tone: 'comercial',
-    emojis: 'moderado',
-    products: [
-      { name: 'Plano Starter', price: 'R$ 497/mês', description: 'WhatsApp + CRM + Inbox + Pipeline' },
-      { name: 'Plano Pro', price: 'R$ 697/mês', description: 'Tudo do Starter + Follow-ups + regras avançadas' },
-    ],
-    qualificationQuestions: [
-      'Qual seu objetivo principal com o WhatsApp?',
-      'Quantos leads por dia vocês recebem?',
-      'Qual o maior problema hoje: demora, organização ou follow-up?',
-      'Você quer agendar, vender ou suporte?',
-    ],
-    closingData: ['nome', 'telefone', 'empresa', 'segmento', 'melhor_horario'],
-    criticalRules: [
-      'Nunca inventar preços, prazos ou promoções',
-      'Respeitar STOP imediatamente',
-      'Não prometer resultados garantidos',
-      'Transferir para humano se solicitado',
-      'Evitar argumentos agressivos; manter premium/consultivo',
-    ],
-    tools: [
-      { name: 'salvar_lead', description: 'Salvar/atualizar lead no CRM', enabled: true },
-      { name: 'transferir_humano', description: 'Handoff para atendente', enabled: true },
-      { name: 'agendar', description: 'Agendar horário/consulta', enabled: false },
-      { name: 'enviar_proposta', description: 'Enviar proposta e link', enabled: false },
-    ],
-  };
-}
-
-function storageKey() {
-  return `oneeleven_bot_config_v1:${WORKSPACE_ID() || 'default'}`;
-}
+import { demoBotConfig } from '@/data/demoData';
 
 export default function Bot() {
   const { currentWorkspace } = useWorkspace();
-
-  const [config, setConfig] = useState<BotConfig>(() => {
-    const name = currentWorkspace?.name || 'ONE ELEVEN';
-    const raw = localStorage.getItem(storageKey());
-    if (raw) {
-      try {
-        return JSON.parse(raw) as BotConfig;
-      } catch {}
-    }
-    return defaultBotConfig(name);
-  });
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(storageKey(), JSON.stringify(config));
-    } catch {}
-  }, [config]);
-
+  const [config, setConfig] = useState(demoBotConfig);
   const [showPrompt, setShowPrompt] = useState(false);
   const [copied, setCopied] = useState(false);
-
-  const workspaceId = WORKSPACE_ID();
-
-  const leadsQuery = useQuery({
-    queryKey: ['leads', workspaceId],
-    enabled: !!API_BASE() && !!API_TOKEN() && !!workspaceId,
-    queryFn: async () => {
-      const q = `?workspace_id=${encodeURIComponent(workspaceId)}`;
-      const j = await apiGet<{ ok: true; leads: ApiLead[] }>(`/api/leads${q}`);
-      return j.leads || [];
-    },
-    staleTime: 15_000,
-  });
-
-  const conversionsCount = useMemo(() => {
-    const leads = leadsQuery.data || [];
-    return leads.filter((l) => isConversionStage(l.stage)).length;
-  }, [leadsQuery.data]);
-
-  const estimatedRevenue = useMemo(() => {
-    // sem coluna de valor ainda => estimativa conservadora: R$0 (sem inventar número)
-    return 0;
-  }, [conversionsCount]);
 
   const generatedPrompt = `Você é ${config.agentName}, ${config.presentation} da ${config.companyName}.
 
@@ -186,13 +27,13 @@ ESCOPO: ${config.scope.join(', ')}
 TOM: ${config.tone} | Emojis: ${config.emojis}
 
 PRODUTOS:
-${config.products.map((p) => `- ${p.name}: ${p.price} - ${p.description}`).join('\n')}
+${config.products.map(p => `- ${p.name}: ${p.price} - ${p.description}`).join('\n')}
 
 QUALIFICAÇÃO:
-${config.qualificationQuestions.map((q) => `- ${q}`).join('\n')}
+${config.qualificationQuestions.map(q => `- ${q}`).join('\n')}
 
 REGRAS CRÍTICAS:
-${config.criticalRules.map((r) => `⚠️ ${r}`).join('\n')}`;
+${config.criticalRules.map(r => `⚠️ ${r}`).join('\n')}`;
 
   const copyPrompt = () => {
     navigator.clipboard.writeText(generatedPrompt);
@@ -213,7 +54,9 @@ ${config.criticalRules.map((r) => `⚠️ ${r}`).join('\n')}`;
         </Button>
       </div>
 
+      {/* Main Layout: Content + Sidebar */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+        {/* Main Content - 3 columns */}
         <div className="lg:col-span-3 space-y-6">
           <Tabs defaultValue="identity" className="space-y-6">
             <TabsList className="bg-secondary border border-border">
@@ -226,63 +69,23 @@ ${config.criticalRules.map((r) => `⚠️ ${r}`).join('\n')}`;
             <TabsContent value="identity" className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <Card className="bg-card border-border">
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-base flex items-center gap-2">
-                      <BotIcon className="w-4 h-4 text-primary" />
-                      Company
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <Input
-                      value={config.companyName}
-                      onChange={(e) => setConfig({ ...config, companyName: e.target.value })}
-                      className="bg-secondary border-border"
-                    />
-                  </CardContent>
+                  <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><BotIcon className="w-4 h-4 text-primary" />Company</CardTitle></CardHeader>
+                  <CardContent><Input defaultValue={config.companyName} className="bg-secondary border-border" /></CardContent>
                 </Card>
                 <Card className="bg-card border-border">
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-base">Agent Name</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <Input
-                      value={config.agentName}
-                      onChange={(e) => setConfig({ ...config, agentName: e.target.value })}
-                      className="bg-secondary border-border"
-                    />
-                  </CardContent>
+                  <CardHeader className="pb-2"><CardTitle className="text-base">Agent Name</CardTitle></CardHeader>
+                  <CardContent><Input defaultValue={config.agentName} className="bg-secondary border-border" /></CardContent>
                 </Card>
               </div>
-
               <Card className="bg-card border-border">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <Target className="w-4 h-4 text-primary" />
-                    Mission
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <Textarea
-                    value={config.mission}
-                    onChange={(e) => setConfig({ ...config, mission: e.target.value })}
-                    className="bg-secondary border-border"
-                    rows={3}
-                  />
-                </CardContent>
+                <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><Target className="w-4 h-4 text-primary" />Mission</CardTitle></CardHeader>
+                <CardContent><Textarea defaultValue={config.mission} className="bg-secondary border-border" rows={3} /></CardContent>
               </Card>
-
               <Card className="bg-card border-border">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-base">Presentation Style</CardTitle>
-                </CardHeader>
+                <CardHeader className="pb-2"><CardTitle className="text-base">Presentation Style</CardTitle></CardHeader>
                 <CardContent>
-                  <Select
-                    value={config.presentation}
-                    onValueChange={(v) => setConfig({ ...config, presentation: v })}
-                  >
-                    <SelectTrigger className="bg-secondary border-border">
-                      <SelectValue />
-                    </SelectTrigger>
+                  <Select defaultValue={config.presentation}>
+                    <SelectTrigger className="bg-secondary border-border"><SelectValue /></SelectTrigger>
                     <SelectContent className="bg-popover border-border">
                       <SelectItem value="Central de Vendas">Central de Vendas</SelectItem>
                       <SelectItem value="Consultor">Consultor</SelectItem>
@@ -296,20 +99,10 @@ ${config.criticalRules.map((r) => `⚠️ ${r}`).join('\n')}`;
             <TabsContent value="behavior" className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <Card className="bg-card border-border">
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-base flex items-center gap-2">
-                      <MessageSquare className="w-4 h-4 text-primary" />
-                      Tone
-                    </CardTitle>
-                  </CardHeader>
+                  <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><MessageSquare className="w-4 h-4 text-primary" />Tone</CardTitle></CardHeader>
                   <CardContent>
-                    <Select
-                      value={config.tone}
-                      onValueChange={(v: BotTone) => setConfig({ ...config, tone: v })}
-                    >
-                      <SelectTrigger className="bg-secondary border-border">
-                        <SelectValue />
-                      </SelectTrigger>
+                    <Select defaultValue={config.tone}>
+                      <SelectTrigger className="bg-secondary border-border"><SelectValue /></SelectTrigger>
                       <SelectContent className="bg-popover border-border">
                         <SelectItem value="formal">Formal</SelectItem>
                         <SelectItem value="profissional">Profissional</SelectItem>
@@ -319,22 +112,11 @@ ${config.criticalRules.map((r) => `⚠️ ${r}`).join('\n')}`;
                     </Select>
                   </CardContent>
                 </Card>
-
                 <Card className="bg-card border-border">
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-base flex items-center gap-2">
-                      <Smile className="w-4 h-4 text-warning" />
-                      Emojis
-                    </CardTitle>
-                  </CardHeader>
+                  <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><Smile className="w-4 h-4 text-warning" />Emojis</CardTitle></CardHeader>
                   <CardContent>
-                    <Select
-                      value={config.emojis}
-                      onValueChange={(v: BotEmojis) => setConfig({ ...config, emojis: v })}
-                    >
-                      <SelectTrigger className="bg-secondary border-border">
-                        <SelectValue />
-                      </SelectTrigger>
+                    <Select defaultValue={config.emojis}>
+                      <SelectTrigger className="bg-secondary border-border"><SelectValue /></SelectTrigger>
                       <SelectContent className="bg-popover border-border">
                         <SelectItem value="nao">Não usar</SelectItem>
                         <SelectItem value="moderado">Moderado</SelectItem>
@@ -348,19 +130,11 @@ ${config.criticalRules.map((r) => `⚠️ ${r}`).join('\n')}`;
 
             <TabsContent value="products" className="space-y-4">
               <Card className="bg-card border-border">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <Package className="w-4 h-4 text-primary" />
-                    Available Products
-                  </CardTitle>
-                </CardHeader>
+                <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><Package className="w-4 h-4 text-primary" />Available Products</CardTitle></CardHeader>
                 <CardContent className="space-y-3">
                   {config.products.map((product, i) => (
                     <div key={i} className="flex items-center gap-4 p-3 bg-secondary/50 rounded-lg">
-                      <div className="flex-1">
-                        <p className="font-medium text-foreground">{product.name}</p>
-                        <p className="text-sm text-muted-foreground">{product.description}</p>
-                      </div>
+                      <div className="flex-1"><p className="font-medium text-foreground">{product.name}</p><p className="text-sm text-muted-foreground">{product.description}</p></div>
                       <Badge className="bg-success/20 text-success border-success/30">{product.price}</Badge>
                     </div>
                   ))}
@@ -370,27 +144,12 @@ ${config.criticalRules.map((r) => `⚠️ ${r}`).join('\n')}`;
 
             <TabsContent value="tools" className="space-y-4">
               <Card className="bg-card border-border">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <Wrench className="w-4 h-4 text-primary" />
-                    Available Tools (n8n)
-                  </CardTitle>
-                </CardHeader>
+                <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><Wrench className="w-4 h-4 text-primary" />Available Tools (n8n)</CardTitle></CardHeader>
                 <CardContent className="space-y-3">
                   {config.tools.map((tool, i) => (
                     <div key={i} className="flex items-center justify-between p-3 bg-secondary/50 rounded-lg">
-                      <div>
-                        <p className="font-medium text-foreground">{tool.name}</p>
-                        <p className="text-xs text-muted-foreground">{tool.description}</p>
-                      </div>
-                      <Switch
-                        checked={tool.enabled}
-                        onCheckedChange={(checked) => {
-                          const next = [...config.tools];
-                          next[i] = { ...next[i], enabled: checked };
-                          setConfig({ ...config, tools: next });
-                        }}
-                      />
+                      <div><p className="font-medium text-foreground">{tool.name}</p><p className="text-xs text-muted-foreground">{tool.description}</p></div>
+                      <Switch checked={tool.enabled} />
                     </div>
                   ))}
                 </CardContent>
@@ -398,10 +157,8 @@ ${config.criticalRules.map((r) => `⚠️ ${r}`).join('\n')}`;
             </TabsContent>
           </Tabs>
 
-          <Card
-            className="bg-gradient-to-br from-warning/20 via-warning/10 to-card border-warning/30 glow-gold animate-fade-in"
-            style={{ animationDelay: '200ms' }}
-          >
+          {/* Converted Card - Gold Glow */}
+          <Card className="bg-gradient-to-br from-warning/20 via-warning/10 to-card border-warning/30 glow-gold animate-fade-in" style={{ animationDelay: '200ms' }}>
             <CardContent className="pt-6">
               <div className="flex items-center justify-between">
                 <div className="space-y-1">
@@ -409,19 +166,17 @@ ${config.criticalRules.map((r) => `⚠️ ${r}`).join('\n')}`;
                     <Sparkles className="w-4 h-4" />
                     Conversões pelo Bot
                   </p>
-                  <p className="text-4xl font-bold font-display text-warning">
-                    {leadsQuery.isLoading ? '—' : conversionsCount}
+                  <p className="text-4xl font-bold font-display text-warning">23</p>
+                  <p className="text-sm text-muted-foreground">
+                    Leads que converteram após interação com o agente IA
                   </p>
-                  <p className="text-sm text-muted-foreground">Leads que converteram após interação com o agente IA</p>
                 </div>
                 <div className="text-right space-y-2">
                   <div className="flex items-center gap-2 text-success">
                     <TrendingUp className="w-4 h-4" />
-                    <span className="text-sm font-medium">Operacional</span>
+                    <span className="text-sm font-medium">+18% este mês</span>
                   </div>
-                  <p className="text-2xl font-bold text-foreground">
-                    R$ {estimatedRevenue.toLocaleString('pt-BR')}
-                  </p>
+                  <p className="text-2xl font-bold text-foreground">R$ 34.5k</p>
                   <p className="text-xs text-muted-foreground">receita atribuída</p>
                 </div>
               </div>
@@ -429,7 +184,9 @@ ${config.criticalRules.map((r) => `⚠️ ${r}`).join('\n')}`;
           </Card>
         </div>
 
+        {/* Sidebar - 1 column */}
         <div className="lg:col-span-1 space-y-4">
+          {/* Regras Anti-Loucura */}
           <Card className="bg-card border-border sticky top-6">
             <CardHeader className="pb-3">
               <CardTitle className="text-base flex items-center gap-2">
@@ -440,20 +197,19 @@ ${config.criticalRules.map((r) => `⚠️ ${r}`).join('\n')}`;
             </CardHeader>
             <CardContent className="space-y-2">
               {config.criticalRules.map((rule, i) => (
-                <div
-                  key={i}
+                <div 
+                  key={i} 
                   className="flex items-start gap-2 p-2 bg-destructive/5 rounded-lg border border-destructive/10 transition-all hover:bg-destructive/10 hover:border-destructive/20"
                   style={{ animationDelay: `${i * 50}ms` }}
                 >
-                  <Badge variant="outline" className="border-destructive/30 text-destructive shrink-0 mt-0.5">
-                    ⚠️
-                  </Badge>
+                  <Badge variant="outline" className="border-destructive/30 text-destructive shrink-0 mt-0.5">⚠️</Badge>
                   <span className="text-xs text-foreground leading-relaxed">{rule}</span>
                 </div>
               ))}
             </CardContent>
           </Card>
 
+          {/* Quick Stats */}
           <Card className="bg-card border-border">
             <CardHeader className="pb-3">
               <CardTitle className="text-base flex items-center gap-2">
@@ -464,19 +220,19 @@ ${config.criticalRules.map((r) => `⚠️ ${r}`).join('\n')}`;
             <CardContent className="space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-sm text-muted-foreground">Respostas hoje</span>
-                <span className="font-semibold text-foreground">—</span>
+                <span className="font-semibold text-foreground">147</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-sm text-muted-foreground">Taxa de sucesso</span>
-                <span className="font-semibold text-success">—</span>
+                <span className="font-semibold text-success">94%</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-sm text-muted-foreground">Handoffs humanos</span>
-                <span className="font-semibold text-warning">—</span>
+                <span className="font-semibold text-warning">12</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-sm text-muted-foreground">Tempo médio</span>
-                <span className="font-semibold text-foreground">—</span>
+                <span className="font-semibold text-foreground">1.2s</span>
               </div>
             </CardContent>
           </Card>
@@ -485,28 +241,9 @@ ${config.criticalRules.map((r) => `⚠️ ${r}`).join('\n')}`;
 
       <Dialog open={showPrompt} onOpenChange={setShowPrompt}>
         <DialogContent className="bg-card border-border max-w-2xl max-h-[80vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="text-foreground flex items-center gap-2">
-              <Sparkles className="w-5 h-5 text-warning" />
-              Generated Agent Prompt
-            </DialogTitle>
-          </DialogHeader>
-          <pre className="bg-secondary p-4 rounded-lg text-sm text-foreground whitespace-pre-wrap font-mono">
-            {generatedPrompt}
-          </pre>
-          <Button className="btn-premium" onClick={copyPrompt}>
-            {copied ? (
-              <>
-                <Check className="w-4 h-4 mr-2" />
-                Copied!
-              </>
-            ) : (
-              <>
-                <Copy className="w-4 h-4 mr-2" />
-                Copy Prompt
-              </>
-            )}
-          </Button>
+          <DialogHeader><DialogTitle className="text-foreground flex items-center gap-2"><Sparkles className="w-5 h-5 text-warning" />Generated Agent Prompt</DialogTitle></DialogHeader>
+          <pre className="bg-secondary p-4 rounded-lg text-sm text-foreground whitespace-pre-wrap font-mono">{generatedPrompt}</pre>
+          <Button className="btn-premium" onClick={copyPrompt}>{copied ? <><Check className="w-4 h-4 mr-2" />Copied!</> : <><Copy className="w-4 h-4 mr-2" />Copy Prompt</>}</Button>
         </DialogContent>
       </Dialog>
     </div>
